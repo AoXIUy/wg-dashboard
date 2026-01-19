@@ -1,19 +1,49 @@
 package main
 
 import (
+	"context"
 	"database/sql"
+	_ "embed"
+	"errors"
 	"flag"
-	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
+	"regexp"
 	"sort"
+	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/gin-gonic/gin"
-	_ "modernc.org/sqlite" // Pure Go SQLite 驱动，无需 CGO
+	"github.com/shirou/gopsutil/v3/cpu"
+	"github.com/shirou/gopsutil/v3/host"
+	"github.com/shirou/gopsutil/v3/mem"
 	"golang.zx2c4.com/wireguard/wgctrl"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
+	_ "modernc.org/sqlite"
+)
+
+//go:embed index.html
+var indexHtml string
+
+// ================= 常量定义 =================
+const (
+	CollectInterval       = 2 * time.Second
+	WriteInterval         = 6 * time.Second
+	BatchSize             = 10
+	MaxAliasLength        = 100
+	MaxPublicKeyLength    = 200
+	OnlineThreshold       = 3 * time.Minute
+	DBMaxOpenConns        = 25
+	DBMaxIdleConns        = 5
+	DBConnMaxLifetime     = 5 * time.Minute
+	CacheTTL              = 10 * time.Minute
+	ShutdownTimeout       = 30 * time.Second
+	BitsPerByte           = 8.0
+	MegabitsPerSecond     = 1000000.0
 )
 
 // ================= 配置区域 =================
@@ -24,32 +54,23 @@ var (
 	Retention   int
 )
 
-const (
-	CollectInterval = 5 * time.Second  // 采集频率
-	WriteInterval   = 30 * time.Second // 数据库批量写入频率
-	BatchSize       = 100              // 批量写入触发阈值
-)
-
 // ================= 数据结构 =================
 
-// RawSnapshot 原始快照（采集层 -> 处理层）
 type RawSnapshot struct {
 	Timestamp time.Time
 	Peers     []wgtypes.Peer
 }
 
-// ProcessedLog 处理后的日志（处理层 -> 写入层）
 type ProcessedLog struct {
-	Timestamp     time.Time
-	PublicKey     string
-	RxBytes       int64
-	TxBytes       int64
-	RxRate        float64
-	TxRate        float64
-	IsOnline      bool
+	Timestamp int64
+	PublicKey string
+	RxBytes   int64
+	TxBytes   int64
+	RxRate    float64
+	TxRate    float64
+	IsOnline  bool
 }
 
-// PeerData 前端展示模型
 type PeerData struct {
 	PublicKey     string    `json:"public_key"`
 	AllowedIPs    []string  `json:"allowed_ips"`
@@ -63,49 +84,98 @@ type PeerData struct {
 	IsOnline      bool      `json:"is_online"`
 }
 
-// PeerState 内部状态缓存（用于计算速率）
 type PeerState struct {
-	LastRx        int64
-	LastTx        int64
-	LastHandshake time.Time
-	LastSeen      time.Time
+	LastRx   int64
+	LastTx   int64
+	LastSeen time.Time
+}
+
+type SystemInfo struct {
+	CPUPercent float64 `json:"cpu_percent"`
+	MemPercent float64 `json:"mem_percent"`
+	CPUTemp    float64 `json:"cpu_temp"`
+	Uptime     uint64  `json:"uptime"`
+	HostName   string  `json:"hostname"`
+	OS         string  `json:"os"`
+}
+
+type cacheEntry struct {
+	data      ProcessedLog
+	timestamp time.Time
 }
 
 // ================= 全局变量 =================
 var (
-	db *sql.DB
-	// 内存缓存：用于 API 快速响应，避免每次查库
+	db               *sql.DB
 	latestPeersCache sync.Map
+	publicKeyRegex   = regexp.MustCompile(`^[A-Za-z0-9+/]{43}=$`)
+	logger           *log.Logger
 )
 
 func main() {
-	// 1. 参数解析
+	logger = log.New(os.Stdout, "[WG-Monitor] ", log.LstdFlags|log.Lshortfile)
+
 	flag.StringVar(&WGInterface, "iface", "wg0", "WireGuard 接口名称")
 	flag.StringVar(&ServerPort, "port", ":8080", "Web 监听端口")
 	flag.StringVar(&DBPath, "db", "./wg_stats.db", "数据库路径")
 	flag.IntVar(&Retention, "days", 30, "数据保留天数")
 	flag.Parse()
 
-	// 2. 初始化数据库
-	initDB()
-	defer db.Close()
+	if err := initDB(); err != nil {
+		logger.Fatalf("数据库初始化失败: %v", err)
+	}
+	defer func() {
+		if err := db.Close(); err != nil {
+			logger.Printf("数据库关闭失败: %v", err)
+		}
+	}()
 
-	// 3. 启动 Pipeline (采集 -> 处理 -> 写入)
-	rawChan := make(chan RawSnapshot, 10)
-	writeChan := make(chan []ProcessedLog, 5)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-	go startCollector(rawChan)
-	go startProcessor(rawChan, writeChan)
-	go startWriter(writeChan)
-	go startCleaner()
+	rawChan := make(chan RawSnapshot, 20)
+	writeChan := make(chan []ProcessedLog, 10)
 
-	// 4. Web 服务
+	var wg sync.WaitGroup
+	
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		startCollector(ctx, rawChan)
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		startProcessor(ctx, rawChan, writeChan)
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		startWriter(ctx, writeChan)
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		startCleaner(ctx)
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		startCacheCleaner(ctx)
+	}()
+
 	gin.SetMode(gin.ReleaseMode)
-	r := gin.Default()
+	r := gin.New()
+	r.Use(gin.Recovery())
+	// r.Use(requestLogger()) // 可选：启用请求日志
 
 	r.GET("/", func(c *gin.Context) {
-		c.Header("Content-Type", "text/html")
-		c.String(http.StatusOK, htmlContent)
+		c.Header("Content-Type", "text/html; charset=utf-8")
+		c.String(http.StatusOK, indexHtml)
 	})
 
 	api := r.Group("/api")
@@ -115,37 +185,90 @@ func main() {
 		api.GET("/stats", getStats)
 		api.POST("/alias", setAlias)
 		api.GET("/chart/traffic", getTrafficChartData)
+		api.GET("/system", getSystemStatus)
 	}
 
-	log.Printf("==============================================")
-	log.Printf("WireGuard Monitor (Pure Go Optimized)")
-	log.Printf("接口: %s | 端口: %s", WGInterface, ServerPort)
-	log.Printf("数据库: %s", DBPath)
-	log.Printf("==============================================")
-
-	if err := r.Run(ServerPort); err != nil {
-		log.Fatal(err)
+	srv := &http.Server{
+		Addr:    ServerPort,
+		Handler: r,
 	}
+
+	go func() {
+		logger.Printf("==============================================")
+		logger.Printf("WireGuard Monitor 启动成功")
+		logger.Printf("接口: %s | 端口: %s", WGInterface, ServerPort)
+		logger.Printf("数据库: %s | 保留天数: %d", DBPath, Retention)
+		logger.Printf("==============================================")
+		
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Fatalf("HTTP 服务器启动失败: %v", err)
+		}
+	}()
+
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+
+	logger.Println("开始优雅关闭...")
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), ShutdownTimeout)
+	defer shutdownCancel()
+	
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		logger.Printf("HTTP 服务器关闭失败: %v", err)
+	}
+
+	cancel()
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		logger.Println("所有后台任务已停止")
+	case <-time.After(ShutdownTimeout):
+		logger.Println("后台任务关闭超时")
+	}
+
+	logger.Println("程序已退出")
 }
 
 // ================= 数据库层 =================
-
-func initDB() {
+func initDB() error {
 	var err error
 	db, err = sql.Open("sqlite", DBPath)
 	if err != nil {
-		log.Fatal("数据库打开失败:", err)
+		return err
 	}
 
-	// 性能调优 (WAL模式大幅提升并发写入性能)
-	db.Exec("PRAGMA journal_mode = WAL;")
-	db.Exec("PRAGMA synchronous = NORMAL;")
-	db.Exec("PRAGMA temp_store = MEMORY;")
+	db.SetMaxOpenConns(DBMaxOpenConns)
+	db.SetMaxIdleConns(DBMaxIdleConns)
+	db.SetConnMaxLifetime(DBConnMaxLifetime)
+
+	if err := db.Ping(); err != nil {
+		return err
+	}
+
+	pragmas := []string{
+		"PRAGMA journal_mode = WAL",
+		"PRAGMA synchronous = NORMAL",
+		"PRAGMA cache_size = -64000",
+		"PRAGMA temp_store = MEMORY",
+	}
+
+	for _, pragma := range pragmas {
+		if _, err := db.Exec(pragma); err != nil {
+			logger.Printf("警告: 执行 %s 失败: %v", pragma, err)
+		}
+	}
 
 	schema := `
 	CREATE TABLE IF NOT EXISTS traffic_history (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		timestamp DATETIME NOT NULL,
+		timestamp INTEGER NOT NULL, 
 		peer_public_key TEXT NOT NULL,
 		rx_bytes INTEGER NOT NULL,
 		tx_bytes INTEGER NOT NULL,
@@ -161,104 +284,154 @@ func initDB() {
 		alias TEXT NOT NULL
 	);
 	`
+	
 	if _, err := db.Exec(schema); err != nil {
-		log.Fatal("建表失败:", err)
+		return err
 	}
+
+	logger.Println("数据库初始化成功")
+	return nil
 }
 
 // ================= 核心 Pipeline =================
+func startCollector(ctx context.Context, out chan<- RawSnapshot) {
+	logger.Println("采集器已启动")
+	defer logger.Println("采集器已停止")
 
-// 1. 采集器 (Collector)
-func startCollector(out chan<- RawSnapshot) {
 	var client *wgctrl.Client
 	var err error
-
-	reconnect := func() {
-		if client != nil { client.Close() }
+	
+	reconnect := func() error {
+		if client != nil {
+			client.Close()
+		}
 		client, err = wgctrl.New()
 		if err != nil {
-			log.Printf("WireGuard 连接失败: %v", err)
+			logger.Printf("WireGuard 连接失败: %v", err)
+			return err
 		}
+		logger.Println("WireGuard 客户端连接成功")
+		return nil
 	}
 
-	reconnect()
+	if err := reconnect(); err != nil {
+		logger.Printf("初始连接失败，将在后续重试")
+	}
+
 	ticker := time.NewTicker(CollectInterval)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		if client == nil {
-			reconnect()
-			if client == nil { continue }
-		}
-
-		device, err := client.Device(WGInterface)
-		if err != nil {
-			log.Printf("获取设备信息失败 (尝试重连): %v", err)
-			reconnect()
-			continue
-		}
-
-		// 非阻塞发送
+	for {
 		select {
-		case out <- RawSnapshot{Timestamp: time.Now(), Peers: device.Peers}:
-		default:
-			// log.Println("警告: 处理通道已满，跳过本次采集")
+		case <-ctx.Done():
+			if client != nil {
+				client.Close()
+			}
+			close(out)
+			return
+		case <-ticker.C:
+			if client == nil {
+				if err := reconnect(); err != nil {
+					continue
+				}
+			}
+
+			device, err := client.Device(WGInterface)
+			if err != nil {
+				logger.Printf("获取设备信息失败: %v", err)
+				reconnect()
+				continue
+			}
+
+			select {
+			case out <- RawSnapshot{Timestamp: time.Now(), Peers: device.Peers}:
+			case <-ctx.Done():
+				if client != nil {
+					client.Close()
+				}
+				close(out)
+				return
+			default:
+				logger.Println("警告: 采集通道已满，丢弃数据")
+			}
 		}
 	}
 }
 
-// 2. 处理器 (Processor)
-func startProcessor(in <-chan RawSnapshot, out chan<- []ProcessedLog) {
+func startProcessor(ctx context.Context, in <-chan RawSnapshot, out chan<- []ProcessedLog) {
+	logger.Println("处理器已启动")
+	defer logger.Println("处理器已停止")
+
 	stateMap := make(map[string]*PeerState)
 	var buffer []ProcessedLog
 	flushTicker := time.NewTicker(WriteInterval)
+	defer flushTicker.Stop()
 
 	flush := func() {
-		if len(buffer) > 0 {
-			batch := make([]ProcessedLog, len(buffer))
-			copy(batch, buffer)
-			select {
-			case out <- batch:
-			default:
-			}
+		if len(buffer) == 0 {
+			return
+		}
+
+		batch := make([]ProcessedLog, len(buffer))
+		copy(batch, buffer)
+		
+		select {
+		case out <- batch:
 			buffer = buffer[:0]
+		case <-ctx.Done():
+			return
+		default:
+			logger.Printf("警告: 写入通道已满，缓冲区大小: %d", len(buffer))
 		}
 	}
 
 	for {
 		select {
-		case snap := <-in:
+		case <-ctx.Done():
+			flush()
+			close(out)
+			return
+
+		case snap, ok := <-in:
+			if !ok {
+				flush()
+				close(out)
+				return
+			}
+
 			for _, p := range snap.Peers {
 				pk := p.PublicKey.String()
-				
 				state, exists := stateMap[pk]
+				
 				if !exists {
-					state = &PeerState{LastRx: p.ReceiveBytes, LastTx: p.TransmitBytes, LastSeen: snap.Timestamp}
+					state = &PeerState{
+						LastRx:   p.ReceiveBytes,
+						LastTx:   p.TransmitBytes,
+						LastSeen: snap.Timestamp,
+					}
 					stateMap[pk] = state
 				}
 
-				// 计算速率 (KB/s)
 				timeDiff := snap.Timestamp.Sub(state.LastSeen).Seconds()
 				var rxRate, txRate float64
+
 				if timeDiff > 0 {
 					if p.ReceiveBytes >= state.LastRx {
-						rxRate = float64(p.ReceiveBytes - state.LastRx) / timeDiff / 1024
+						rxRate = float64(p.ReceiveBytes-state.LastRx) * BitsPerByte / timeDiff / MegabitsPerSecond
 					}
 					if p.TransmitBytes >= state.LastTx {
-						txRate = float64(p.TransmitBytes - state.LastTx) / timeDiff / 1024
+						txRate = float64(p.TransmitBytes-state.LastTx) * BitsPerByte / timeDiff / MegabitsPerSecond
 					}
 				}
 
-				// 在线状态判定：只要 3 分钟内有握手即视为在线 (标准 WireGuard 逻辑)
-				isOnline := !p.LastHandshakeTime.IsZero() && time.Since(p.LastHandshakeTime) < 3*time.Minute
+				isOnline := !p.LastHandshakeTime.IsZero() && time.Since(p.LastHandshakeTime) < OnlineThreshold
 
 				state.LastRx = p.ReceiveBytes
 				state.LastTx = p.TransmitBytes
-				state.LastHandshake = p.LastHandshakeTime
 				state.LastSeen = snap.Timestamp
 
 				logEntry := ProcessedLog{
-					Timestamp: snap.Timestamp,
+					Timestamp: snap.Timestamp.Unix(),
 					PublicKey: pk,
 					RxBytes:   p.ReceiveBytes,
 					TxBytes:   p.TransmitBytes,
@@ -266,9 +439,12 @@ func startProcessor(in <-chan RawSnapshot, out chan<- []ProcessedLog) {
 					TxRate:    txRate,
 					IsOnline:  isOnline,
 				}
-
+				
 				buffer = append(buffer, logEntry)
-				latestPeersCache.Store(pk, logEntry)
+				latestPeersCache.Store(pk, cacheEntry{
+					data:      logEntry,
+					timestamp: time.Now(),
+				})
 			}
 
 			if len(buffer) >= BatchSize {
@@ -281,66 +457,295 @@ func startProcessor(in <-chan RawSnapshot, out chan<- []ProcessedLog) {
 	}
 }
 
-// 3. 写入器 (Writer)
-func startWriter(in <-chan []ProcessedLog) {
-	for batch := range in {
-		if len(batch) == 0 { continue }
+func startWriter(ctx context.Context, in <-chan []ProcessedLog) {
+	logger.Println("写入器已启动")
+	defer logger.Println("写入器已停止")
 
-		tx, err := db.Begin()
-		if err != nil { continue }
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case batch, ok := <-in:
+			if !ok {
+				return
+			}
 
-		stmt, err := tx.Prepare(`
-			INSERT INTO traffic_history (timestamp, peer_public_key, rx_bytes, tx_bytes, rx_rate, tx_rate, is_online)
-			VALUES (?, ?, ?, ?, ?, ?, ?)
-		`)
-		if err != nil {
-			tx.Rollback()
-			continue
+			if len(batch) == 0 {
+				continue
+			}
+
+			if err := writeBatch(batch); err != nil {
+				logger.Printf("批量写入失败 (大小: %d): %v", len(batch), err)
+			}
 		}
-
-		for _, logEntry := range batch {
-			stmt.Exec(
-				logEntry.Timestamp, logEntry.PublicKey,
-				logEntry.RxBytes, logEntry.TxBytes,
-				logEntry.RxRate, logEntry.TxRate, logEntry.IsOnline,
-			)
-		}
-		stmt.Close()
-		tx.Commit()
 	}
 }
 
-// 4. 清理器 (Cleaner)
-func startCleaner() {
-	if Retention <= 0 { return }
+func writeBatch(batch []ProcessedLog) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare(`
+		INSERT INTO traffic_history 
+		(timestamp, peer_public_key, rx_bytes, tx_bytes, rx_rate, tx_rate, is_online) 
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for _, logEntry := range batch {
+		if _, err := stmt.Exec(
+			logEntry.Timestamp,
+			logEntry.PublicKey,
+			logEntry.RxBytes,
+			logEntry.TxBytes,
+			logEntry.RxRate,
+			logEntry.TxRate,
+			logEntry.IsOnline,
+		); err != nil {
+			logger.Printf("插入记录失败 (peer: %s): %v", logEntry.PublicKey[:16]+"...", err)
+		}
+	}
+
+	return tx.Commit()
+}
+
+func startCleaner(ctx context.Context) {
+	if Retention <= 0 {
+		return
+	}
+c
+	logger.Printf("数据清理器已启动 (保留 %d 天)", Retention)
+	defer logger.Println("数据清理器已停止")
+
+	ticker := time.NewTicker(24 * time.Hour)
+	defer ticker.Stop()
+
+	cleanOldData()
+
 	for {
-		time.Sleep(24 * time.Hour)
-		log.Println("执行历史数据清理...")
-		db.Exec(`DELETE FROM traffic_history WHERE timestamp < datetime('now', '-' || ? || ' days')`, Retention)
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			cleanOldData()
+		}
+	}
+}
+
+func cleanOldData() {
+	expireTime := time.Now().AddDate(0, 0, -Retention).Unix()
+	result, err := db.Exec(`DELETE FROM traffic_history WHERE timestamp < ?`, expireTime)
+	if err != nil {
+		logger.Printf("清理旧数据失败: %v", err)
+		return
+	}
+	affected, _ := result.RowsAffected()
+	if affected > 0 {
+		logger.Printf("已清理 %d 条过期记录", affected)
+	}
+}
+
+func startCacheCleaner(ctx context.Context) {
+	logger.Println("缓存清理器已启动")
+	defer logger.Println("缓存清理器已停止")
+
+	ticker := time.NewTicker(CacheTTL)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			now := time.Now()
+			latestPeersCache.Range(func(key, value interface{}) bool {
+				entry := value.(cacheEntry)
+				if now.Sub(entry.timestamp) > CacheTTL {
+					latestPeersCache.Delete(key)
+				}
+				return true
+			})
+		}
+	}
+}
+
+// ================= 数据查询逻辑 =================
+
+func getRangeParams(period string) (int64, int64) {
+	now := time.Now().Unix()
+	var duration, step int64
+
+	switch period {
+	case "realtime":
+		duration = 1800 // 30 mins
+		step = 2
+	case "30m":
+		duration = 1800
+		step = 60
+	case "1h":
+		duration = 3600
+		step = 60
+	case "12h":
+		duration = 43200
+		step = 300
+	case "24h":
+		duration = 86400
+		step = 1800
+	case "7d":
+		duration = 604800
+		step = 14400
+	default:
+		duration = 1800
+		step = 2
+	}
+	return now - duration, step
+}
+
+func resampleData(rows *sql.Rows, step int64) ([]int64, []float64, []float64, error) {
+	defer rows.Close()
+
+	type bucket struct {
+		rxSum float64
+		txSum float64
+		count int
+	}
+	buckets := make(map[int64]*bucket)
+
+	for rows.Next() {
+		var ts int64
+		var rx, tx float64
+		if err := rows.Scan(&ts, &rx, &tx); err != nil {
+			logger.Printf("扫描行数据失败: %v", err)
+			continue
+		}
+
+		slot := (ts / step) * step
+		if _, ok := buckets[slot]; !ok {
+			buckets[slot] = &bucket{}
+		}
+		buckets[slot].rxSum += rx
+		buckets[slot].txSum += tx
+		buckets[slot].count++
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, nil, nil, err
+	}
+
+	var timestamps []int64
+	for ts := range buckets {
+		timestamps = append(timestamps, ts)
+	}
+	sort.Slice(timestamps, func(i, j int) bool { return timestamps[i] < timestamps[j] })
+
+	var rxList, txList []float64
+	for _, ts := range timestamps {
+		b := buckets[ts]
+		rxList = append(rxList, b.rxSum/float64(b.count))
+		txList = append(txList, b.txSum/float64(b.count))
+	}
+
+	return timestamps, rxList, txList, nil
+}
+
+func validatePublicKey(pk string) error {
+	if len(pk) == 0 {
+		return errors.New("公钥不能为空")
+	}
+	if len(pk) > MaxPublicKeyLength {
+		return errors.New("公钥长度超出限制")
+	}
+	if !publicKeyRegex.MatchString(pk) {
+		return errors.New("公钥格式无效")
+	}
+	return nil
+}
+
+func validateAlias(alias string) error {
+	if len(alias) == 0 {
+		return errors.New("别名不能为空")
+	}
+	if len(alias) > MaxAliasLength {
+		return errors.New("别名长度超出限制")
+	}
+	if strings.ContainsAny(alias, "<>\"';&|") {
+		return errors.New("别名包含非法字符")
+	}
+	return nil
+}
+
+func requestLogger() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		start := time.Now()
+		path := c.Request.URL.Path
+		raw := c.Request.URL.RawQuery
+		c.Next()
+		latency := time.Since(start)
+		if raw != "" {
+			path = path + "?" + raw
+		}
+		logger.Printf("[HTTP] %s %s | %d | %v", c.Request.Method, path, c.Writer.Status(), latency)
 	}
 }
 
 // ================= API Handlers =================
 
+func getSystemStatus(c *gin.Context) {
+	var sys SystemInfo
+
+	if percent, err := cpu.Percent(0, false); err == nil && len(percent) > 0 {
+		sys.CPUPercent = percent[0]
+	}
+	if v, err := mem.VirtualMemory(); err == nil {
+		sys.MemPercent = v.UsedPercent
+	}
+	if h, err := host.Info(); err == nil {
+		sys.Uptime = h.Uptime
+		sys.HostName = h.Hostname
+		sys.OS = h.Platform + " " + h.PlatformVersion
+	}
+	if temps, err := host.SensorsTemperatures(); err == nil {
+		for _, t := range temps {
+			sensorKey := strings.ToLower(t.SensorKey)
+			if strings.Contains(sensorKey, "core") || strings.Contains(sensorKey, "input") {
+				if t.Temperature > sys.CPUTemp {
+					sys.CPUTemp = t.Temperature
+				}
+			}
+		}
+	}
+	c.JSON(http.StatusOK, sys)
+}
+
 func getPeers(c *gin.Context) {
-	client, _ := wgctrl.New()
+	client, err := wgctrl.New()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "无法连接 WireGuard"})
+		return
+	}
 	defer client.Close()
-	
+
 	device, err := client.Device(WGInterface)
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "无法获取设备信息"})
 		return
 	}
 
 	aliasMap := make(map[string]string)
-	rows, _ := db.Query("SELECT public_key, alias FROM peer_aliases")
-	if rows != nil {
+	rows, err := db.Query("SELECT public_key, alias FROM peer_aliases")
+	if err == nil && rows != nil {
+		defer rows.Close()
 		for rows.Next() {
 			var pk, a string
 			rows.Scan(&pk, &a)
 			aliasMap[pk] = a
 		}
-		rows.Close()
 	}
 
 	var peers []PeerData
@@ -351,7 +756,7 @@ func getPeers(c *gin.Context) {
 		for _, ip := range p.AllowedIPs {
 			ips = append(ips, ip.String())
 		}
-		
+
 		ep := "未连接"
 		if p.Endpoint != nil {
 			ep = p.Endpoint.String()
@@ -359,15 +764,14 @@ func getPeers(c *gin.Context) {
 
 		var rxRate, txRate float64
 		var isOnline bool
-		
+
 		if val, ok := latestPeersCache.Load(pk); ok {
-			logEntry := val.(ProcessedLog)
-			rxRate = logEntry.RxRate
-			txRate = logEntry.TxRate
-			isOnline = logEntry.IsOnline
+			entry := val.(cacheEntry)
+			rxRate = entry.data.RxRate
+			txRate = entry.data.TxRate
+			isOnline = entry.data.IsOnline
 		} else {
-			// 如果缓存没有，用握手时间兜底判断
-			isOnline = !p.LastHandshakeTime.IsZero() && time.Since(p.LastHandshakeTime) < 3*time.Minute
+			isOnline = !p.LastHandshakeTime.IsZero() && time.Since(p.LastHandshakeTime) < OnlineThreshold
 		}
 
 		peers = append(peers, PeerData{
@@ -385,14 +789,16 @@ func getPeers(c *gin.Context) {
 	}
 
 	sort.Slice(peers, func(i, j int) bool {
-		// 在线优先，然后按别名/IP排序
 		if peers[i].IsOnline != peers[j].IsOnline {
 			return peers[i].IsOnline
+		}
+		if len(peers[i].AllowedIPs) == 0 || len(peers[j].AllowedIPs) == 0 {
+			return len(peers[i].AllowedIPs) > len(peers[j].AllowedIPs)
 		}
 		return peers[i].AllowedIPs[0] < peers[j].AllowedIPs[0]
 	})
 
-	c.JSON(200, gin.H{
+	c.JSON(http.StatusOK, gin.H{
 		"interface": device.Name,
 		"port":      device.ListenPort,
 		"peers":     peers,
@@ -401,106 +807,63 @@ func getPeers(c *gin.Context) {
 
 func getPeerHistory(c *gin.Context) {
 	pk := c.Param("publickey")
-	period := c.DefaultQuery("period", "24h")
-
-	var hours int
-	switch period {
-	case "7d": hours = 24 * 7
-	case "30d": hours = 24 * 30
-	default: hours = 24
-	}
-
-	groupBy := "strftime('%Y-%m-%d %H:%M', timestamp)"
-	if hours > 24 {
-		groupBy = "strftime('%Y-%m-%d %H', timestamp)"
-	}
-
-	query := fmt.Sprintf(`
-		SELECT 
-			%s as time_bucket,
-			AVG(rx_rate), AVG(tx_rate),
-			MAX(rx_bytes) - MIN(rx_bytes), MAX(tx_bytes) - MIN(tx_bytes)
-		FROM traffic_history
-		WHERE peer_public_key = ? AND timestamp > datetime('now', '-%d hours')
-		GROUP BY time_bucket
-		ORDER BY time_bucket ASC
-	`, groupBy, hours)
-
-	rows, err := db.Query(query, pk)
-	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+	if err := validatePublicKey(pk); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	defer rows.Close()
 
-	var labels []string
-	var rxData, txData []float64
-	var rxVol, txVol []int64
+	period := c.DefaultQuery("period", "realtime")
+	startTime, step := getRangeParams(period)
 
-	for rows.Next() {
-		var t string
-		var rx, tx float64
-		var rVol, tVol sql.NullInt64 
-		
-		if err := rows.Scan(&t, &rx, &tx, &rVol, &tVol); err == nil {
-			if len(t) > 11 {
-				labels = append(labels, t[11:])
-			} else {
-				labels = append(labels, t)
-			}
-			rxData = append(rxData, rx)
-			txData = append(txData, tx)
-			rxVol = append(rxVol, rVol.Int64)
-			txVol = append(txVol, tVol.Int64)
-		}
+	query := `
+		SELECT timestamp, rx_rate, tx_rate 
+		FROM traffic_history 
+		WHERE peer_public_key = ? AND timestamp >= ? 
+		ORDER BY timestamp ASC
+	`
+	rows, err := db.Query(query, pk, startTime)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询失败"})
+		return
 	}
 
-	c.JSON(200, gin.H{
-		"labels": labels,
-		"rates":  gin.H{"rx": rxData, "tx": txData},
-		"volume": gin.H{"rx": rxVol, "tx": txVol},
-	})
+	ts, rx, tx, err := resampleData(rows, step)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "数据处理失败"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"labels": ts, "rates": gin.H{"rx": rx, "tx": tx}})
 }
 
 func getTrafficChartData(c *gin.Context) {
-	query := `
-		SELECT 
-			strftime('%Y-%m-%d %H:%M', timestamp) as tb,
-			SUM(rx_rate), SUM(tx_rate)
-		FROM traffic_history
-		WHERE timestamp > datetime('now', '-24 hours')
-		GROUP BY tb
-		ORDER BY tb
-	`
+	period := c.DefaultQuery("period", "realtime")
+	startTime, step := getRangeParams(period)
 
-	rows, err := db.Query(query)
+	query := `
+		SELECT timestamp, SUM(rx_rate), SUM(tx_rate) 
+		FROM traffic_history
+		WHERE timestamp >= ?
+		GROUP BY timestamp
+		ORDER BY timestamp ASC
+	`
+	rows, err := db.Query(query, startTime)
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询失败"})
 		return
 	}
-	defer rows.Close()
 
-	var labels []string
-	var rx, tx []float64
-
-	for rows.Next() {
-		var t string
-		var r, x float64
-		if err := rows.Scan(&t, &r, &x); err == nil {
-			if len(t) > 11 {
-				labels = append(labels, t[11:])
-			} else {
-				labels = append(labels, t)
-			}
-			rx = append(rx, r)
-			tx = append(tx, x)
-		}
+	ts, rx, tx, err := resampleData(rows, step)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "数据处理失败"})
+		return
 	}
 
-	c.JSON(200, gin.H{"labels": labels, "rx": rx, "tx": tx})
+	c.JSON(http.StatusOK, gin.H{"labels": ts, "rx": rx, "tx": tx})
 }
 
 func getStats(c *gin.Context) {
+	startTime := time.Now().Unix() - 86400
 	topQuery := `
 		SELECT 
 			t.peer_public_key,
@@ -509,306 +872,59 @@ func getStats(c *gin.Context) {
 			MAX(t.tx_bytes) as total_tx
 		FROM traffic_history t
 		LEFT JOIN peer_aliases a ON t.peer_public_key = a.public_key
-		WHERE t.timestamp > datetime('now', '-24 hours')
+		WHERE t.timestamp > ?
 		GROUP BY t.peer_public_key
 		ORDER BY total_rx DESC
 		LIMIT 5
 	`
-	rows, _ := db.Query(topQuery)
-	var topPeers []gin.H
-	if rows != nil {
-		for rows.Next() {
-			var pk, alias string
-			var rx, tx int64
-			rows.Scan(&pk, &alias, &rx, &tx)
-			topPeers = append(topPeers, gin.H{"public_key": pk, "alias": alias, "total_rx": rx, "total_tx": tx})
-		}
-		rows.Close()
+	rows, err := db.Query(topQuery, startTime)
+	if err != nil {
+		logger.Printf("查询统计失败: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询统计失败"})
+		return
 	}
-	c.JSON(200, gin.H{"top_peers": topPeers})
+	defer rows.Close()
+
+	var topPeers []gin.H
+	for rows.Next() {
+		var pk, alias string
+		var rx, tx int64
+		if err := rows.Scan(&pk, &alias, &rx, &tx); err == nil {
+			topPeers = append(topPeers, gin.H{
+				"public_key": pk,
+				"alias":      alias,
+				"total_rx":   rx,
+				"total_tx":   tx,
+			})
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"top_peers": topPeers})
 }
 
 func setAlias(c *gin.Context) {
-	var req struct { PublicKey string `json:"public_key"`; Alias string `json:"alias"` }
-	if err := c.BindJSON(&req); err != nil { return }
-	db.Exec(`INSERT INTO peer_aliases (public_key, alias) VALUES (?, ?) 
-		ON CONFLICT(public_key) DO UPDATE SET alias = excluded.alias`, req.PublicKey, req.Alias)
-	c.JSON(200, gin.H{"status": "ok"})
+	var req struct {
+		PublicKey string `json:"public_key"`
+		Alias     string `json:"alias"`
+	}
+	if err := c.BindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的请求格式"})
+		return
+	}
+
+	if err := validatePublicKey(req.PublicKey); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := validateAlias(req.Alias); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	_, err := db.Exec(`INSERT INTO peer_aliases (public_key, alias) VALUES (?, ?) ON CONFLICT(public_key) DO UPDATE SET alias = excluded.alias`, req.PublicKey, req.Alias)
+	if err != nil {
+		logger.Printf("设置别名失败: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "数据库错误"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
-
-// ================= 前端代码 (优化版) =================
-const htmlContent = `
-<!DOCTYPE html>
-<html lang="zh">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>WireGuard Monitor</title>
-    <script src="https://cdn.staticfile.org/vue/3.3.4/vue.global.prod.min.js"></script>
-    <script src="https://cdn.staticfile.org/axios/1.6.0/axios.min.js"></script>
-    <script src="https://cdn.staticfile.org/Chart.js/4.4.0/chart.umd.min.js"></script>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <style>
-        [v-cloak] { display: none; }
-        .fade-enter-active, .fade-leave-active { transition: opacity 0.3s; }
-        .fade-enter-from, .fade-leave-to { opacity: 0; }
-    </style>
-</head>
-<body class="bg-gray-50 min-h-screen text-slate-800 font-sans">
-    <div id="app" v-cloak class="max-w-7xl mx-auto p-4 lg:p-6 space-y-6">
-        
-        <div class="flex flex-col md:flex-row justify-between items-center bg-white p-4 rounded-xl shadow-sm border border-slate-200">
-            <div class="flex items-center gap-3">
-                <div class="bg-blue-600 p-2 rounded-lg text-white">
-                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
-                </div>
-                <div>
-                    <h1 class="font-bold text-lg">WireGuard Monitor</h1>
-                    <div class="flex items-center gap-2 text-xs text-slate-500">
-                        <span v-if="loading" class="text-blue-600 animate-pulse">● 更新中...</span>
-                        <span v-else>● {{ meta.interface }}:{{ meta.port }}</span>
-                    </div>
-                </div>
-            </div>
-            <div class="flex bg-slate-100 p-1 rounded-lg mt-4 md:mt-0">
-                <button @click="view='list'" :class="view==='list'?'bg-white text-blue-600 shadow-sm':'text-slate-500 hover:text-slate-700'" class="px-6 py-2 rounded-md text-sm font-medium transition-all">列表监控</button>
-                <button @click="view='stats'" :class="view==='stats'?'bg-white text-blue-600 shadow-sm':'text-slate-500 hover:text-slate-700'" class="px-6 py-2 rounded-md text-sm font-medium transition-all">流量分析</button>
-            </div>
-        </div>
-
-        <div v-if="view === 'list'" class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <div class="lg:col-span-3 grid grid-cols-2 md:grid-cols-4 gap-4">
-                <div class="bg-white p-5 rounded-xl shadow-sm border border-slate-200">
-                    <div class="text-xs text-slate-400 font-bold uppercase">在线设备</div>
-                    <div class="text-2xl font-bold text-slate-700 mt-1">{{ onlineCount }} <span class="text-sm text-slate-300 font-normal">/ {{ peers.length }}</span></div>
-                </div>
-                <div class="bg-white p-5 rounded-xl shadow-sm border border-slate-200">
-                    <div class="text-xs text-slate-400 font-bold uppercase">实时总下载</div>
-                    <div class="text-2xl font-bold text-blue-600 mt-1">{{ fmtRate(totalRxRate) }}</div>
-                </div>
-                <div class="bg-white p-5 rounded-xl shadow-sm border border-slate-200">
-                    <div class="text-xs text-slate-400 font-bold uppercase">实时总上传</div>
-                    <div class="text-2xl font-bold text-purple-600 mt-1">{{ fmtRate(totalTxRate) }}</div>
-                </div>
-                <div class="bg-white p-5 rounded-xl shadow-sm border border-slate-200">
-                    <div class="text-xs text-slate-400 font-bold uppercase">状态</div>
-                    <div class="text-sm font-medium text-emerald-600 mt-2 flex items-center gap-2">
-                        <span class="relative flex h-3 w-3"><span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span><span class="relative inline-flex rounded-full h-3 w-3 bg-emerald-500"></span></span>
-                        运行正常
-                    </div>
-                </div>
-            </div>
-
-            <div class="lg:col-span-3 bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-                <div class="overflow-x-auto">
-                    <table class="w-full text-left text-sm whitespace-nowrap">
-                        <thead class="bg-slate-50 text-slate-500 font-semibold border-b border-slate-200">
-                            <tr>
-                                <th class="p-4">客户端 / 别名</th>
-                                <th class="p-4">在线状态</th>
-                                <th class="p-4">实时速率 (Rx / Tx)</th>
-                                <th class="p-4">累计流量 (In / Out)</th>
-                                <th class="p-4 text-right">操作</th>
-                            </tr>
-                        </thead>
-                        <tbody class="divide-y divide-slate-100">
-                            <tr v-for="p in peers" :key="p.public_key" :class="p.is_online ? 'bg-blue-50/30' : 'hover:bg-slate-50'" class="transition-colors">
-                                <td class="p-4">
-                                    <div class="flex flex-col">
-                                        <div class="flex items-center gap-2">
-                                            <span v-if="editing!==p.public_key" @click="editAlias(p)" class="font-bold text-slate-700 cursor-pointer border-b border-dashed border-transparent hover:border-blue-400">{{ p.alias || '无别名' }}</span>
-                                            <input v-else v-model="tempAlias" @blur="saveAlias(p.public_key)" @keyup.enter="saveAlias(p.public_key)" class="border-b-2 border-blue-500 bg-transparent outline-none font-bold text-slate-700 w-32" autofocus placeholder="输入别名...">
-                                        </div>
-                                        <span class="text-xs text-slate-400 font-mono mt-1">{{ p.allowed_ips[0] }}</span>
-                                    </div>
-                                </td>
-                                <td class="p-4">
-                                    <div class="flex items-center gap-2">
-                                        <span class="w-2.5 h-2.5 rounded-full" :class="p.is_online ? 'bg-emerald-500 shadow-sm shadow-emerald-200' : 'bg-slate-300'"></span>
-                                        <div class="flex flex-col">
-                                            <span :class="p.is_online ? 'text-emerald-700 font-medium' : 'text-slate-400'">{{ p.is_online ? '在线' : '离线' }}</span>
-                                            <span class="text-[10px] text-slate-400">{{ timeAgo(p.last_handshake) }}</span>
-                                        </div>
-                                    </div>
-                                </td>
-                                <td class="p-4 font-mono text-xs">
-                                    <div class="text-blue-600 mb-1">↓ {{ fmtRate(p.rx_rate) }}</div>
-                                    <div class="text-purple-600">↑ {{ fmtRate(p.tx_rate) }}</div>
-                                </td>
-                                <td class="p-4 text-xs text-slate-600">
-                                    <div>In: {{ fmtBytes(p.receive_bytes) }}</div>
-                                    <div>Out: {{ fmtBytes(p.transmit_bytes) }}</div>
-                                </td>
-                                <td class="p-4 text-right">
-                                    <button @click="openDetail(p)" class="text-xs bg-white border border-slate-200 hover:text-blue-600 text-slate-600 px-3 py-1.5 rounded-lg transition-all shadow-sm">
-                                        历史详情
-                                    </button>
-                                </td>
-                            </tr>
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-        </div>
-
-        <div v-if="view === 'stats'" class="space-y-6">
-            <div class="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
-                 <div class="flex justify-between items-center mb-6">
-                    <h3 class="font-bold text-slate-800">全网流量趋势 (24小时)</h3>
-                    <button @click="fetchMainStats" class="text-xs text-blue-600 hover:underline">刷新</button>
-                 </div>
-                 <div class="h-80 relative w-full"><canvas id="mainChart"></canvas></div>
-            </div>
-        </div>
-
-        <Transition name="fade">
-            <div v-if="modalPeer" class="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4 z-50" @click.self="modalPeer=null">
-                <div class="bg-white rounded-2xl w-full max-w-4xl max-h-[90vh] overflow-y-auto p-6 shadow-2xl">
-                    <div class="flex justify-between items-start mb-6 border-b pb-4">
-                        <div>
-                            <h2 class="text-xl font-bold">{{ modalPeer.alias || '节点详情' }}</h2>
-                            <p class="text-xs text-slate-500 font-mono mt-1">{{ modalPeer.public_key }}</p>
-                        </div>
-                        <div class="flex items-center gap-3">
-                            <select v-model="historyPeriod" @change="fetchHistory(modalPeer.public_key)" class="bg-slate-50 border rounded-lg px-3 py-1.5 text-sm">
-                                <option value="24h">24 小时</option>
-                                <option value="7d">7 天</option>
-                                <option value="30d">30 天</option>
-                            </select>
-                            <button @click="modalPeer=null" class="text-slate-400 hover:text-slate-700 font-bold text-xl">&times;</button>
-                        </div>
-                    </div>
-                    <div class="relative h-72 bg-slate-50 rounded-xl p-4 mb-6 border">
-                        <canvas id="detailChart"></canvas>
-                        <div v-if="chartLoading" class="absolute inset-0 flex items-center justify-center bg-white/50"><div class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div></div>
-                    </div>
-                    <div class="grid grid-cols-2 gap-4">
-                        <div class="bg-blue-50 p-4 rounded-xl text-center"><div class="text-xs text-blue-500 font-bold uppercase">区间总下载</div><div class="font-bold text-xl text-blue-700">{{ fmtBytes(historyStats.totalRx) }}</div></div>
-                        <div class="bg-purple-50 p-4 rounded-xl text-center"><div class="text-xs text-purple-500 font-bold uppercase">区间总上传</div><div class="font-bold text-xl text-purple-700">{{ fmtBytes(historyStats.totalTx) }}</div></div>
-                    </div>
-                </div>
-            </div>
-        </Transition>
-    </div>
-
-    <script>
-        const { createApp, ref, onMounted, onUnmounted, computed, watch } = Vue;
-        createApp({
-            setup() {
-                const peers = ref([]);
-                const meta = ref({interface: '...', port: '...'});
-                const view = ref('list');
-                const editing = ref(null);
-                const tempAlias = ref('');
-                const loading = ref(false);
-                const modalPeer = ref(null);
-                const historyPeriod = ref('24h');
-                const historyStats = ref({totalRx: 0, totalTx: 0});
-                const chartLoading = ref(false);
-                
-                let chartInst = null, mainChartInst = null, pollTimer = null;
-
-                const fmtBytes = (b) => {
-                    if (b===0) return '0 B';
-                    const k=1024, sizes=['B','KB','MB','GB','TB'];
-                    const i=Math.floor(Math.log(b)/Math.log(k));
-                    return parseFloat((b/Math.pow(k,i)).toFixed(2))+' '+sizes[i];
-                };
-                const fmtRate = (kb) => fmtBytes(kb*1024) + '/s';
-                
-                const timeAgo = (t) => {
-                    if (!t || t.startsWith('0001')) return '从未连接';
-                    const diff = (new Date() - new Date(t))/1000;
-                    if (diff < 60) return '刚刚';
-                    if (diff < 3600) return Math.floor(diff/60)+' 分钟前';
-                    if (diff < 86400) return Math.floor(diff/3600)+' 小时前';
-                    return Math.floor(diff/86400)+' 天前';
-                };
-
-                const totalRxRate = computed(() => peers.value.reduce((a,b)=>a+(b.rx_rate||0),0));
-                const totalTxRate = computed(() => peers.value.reduce((a,b)=>a+(b.tx_rate||0),0));
-                const onlineCount = computed(() => peers.value.filter(p=>p.is_online).length);
-
-                const fetchPeers = async () => {
-                    loading.value = true;
-                    try {
-                        const res = await axios.get('/api/peers');
-                        peers.value = res.data.peers || [];
-                        meta.value = {interface: res.data.interface, port: res.data.port};
-                    } catch(e){} finally { loading.value = false; }
-                };
-
-                const saveAlias = async (pk) => {
-                    if(!pk) return;
-                    await axios.post('/api/alias', {public_key: pk, alias: tempAlias.value});
-                    editing.value=null; fetchPeers();
-                };
-
-                const openDetail = (p) => { modalPeer.value = p; fetchHistory(p.public_key); };
-
-                const fetchHistory = async (pk) => {
-                    chartLoading.value = true;
-                    try {
-                        const res = await axios.get('/api/history/'+pk+'?period='+historyPeriod.value);
-                        const data = res.data;
-                        historyStats.value.totalRx = (data.volume?.rx||[]).reduce((a,b)=>a+b,0);
-                        historyStats.value.totalTx = (data.volume?.tx||[]).reduce((a,b)=>a+b,0);
-                        renderChart('detailChart', data.labels, data.rates.rx, data.rates.tx, true);
-                    } finally { chartLoading.value = false; }
-                };
-
-                const fetchMainStats = async () => {
-                    const res = await axios.get('/api/chart/traffic');
-                    renderChart('mainChart', res.data.labels, res.data.rx, res.data.tx, false);
-                };
-
-                const renderChart = (id, labels, rx, tx, fill) => {
-                    const ctx = document.getElementById(id);
-                    if (!ctx) return;
-                    let inst = id==='detailChart'?chartInst:mainChartInst;
-                    if (inst) inst.destroy();
-                    
-                    const cfg = {
-                        type: 'line',
-                        data: {
-                            labels: labels,
-                            datasets: [
-                                { label: '下载 (KB/s)', data: rx, borderColor: '#2563eb', tension: 0.3, fill: fill, backgroundColor: '#2563eb10', pointRadius: 0, pointHitRadius: 10 },
-                                { label: '上传 (KB/s)', data: tx, borderColor: '#9333ea', tension: 0.3, fill: fill, backgroundColor: '#9333ea10', pointRadius: 0, pointHitRadius: 10 }
-                            ]
-                        },
-                        options: { responsive: true, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false }, scales: { y: { beginAtZero: true } } }
-                    };
-                    
-                    if(id==='detailChart') chartInst = new Chart(ctx, cfg);
-                    else mainChartInst = new Chart(ctx, cfg);
-                };
-
-                const handleVisibility = () => {
-                    document.hidden ? clearInterval(pollTimer) : (fetchPeers(), pollTimer = setInterval(fetchPeers, 3000));
-                };
-
-                watch(view, (v) => { if(v==='stats') setTimeout(fetchMainStats, 100); });
-
-                onMounted(() => {
-                    fetchPeers();
-                    pollTimer = setInterval(fetchPeers, 3000);
-                    document.addEventListener('visibilitychange', handleVisibility);
-                });
-                onUnmounted(() => {
-                    clearInterval(pollTimer);
-                    document.removeEventListener('visibilitychange', handleVisibility);
-                });
-
-                return {
-                    peers, meta, view, editing, tempAlias, loading, modalPeer, historyPeriod, historyStats, chartLoading,
-                    totalRxRate, totalTxRate, onlineCount,
-                    fmtBytes, fmtRate, timeAgo, saveAlias: saveAlias, openDetail, fetchHistory, fetchMainStats,
-                    editAlias: (p) => { editing.value = p.public_key; tempAlias.value = p.alias||''; }
-                };
-            }
-        }).mount('#app');
-    </script>
-</body>
-</html>
-`
