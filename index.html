@@ -1,0 +1,543 @@
+<!DOCTYPE html>
+<html lang="zh" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WireGuard Pro Dashboard</title>
+    <script src="https://cdn.staticfile.org/vue/3.3.4/vue.global.prod.min.js"></script>
+    <script src="https://cdn.staticfile.org/axios/1.6.0/axios.min.js"></script>
+    <script src="https://cdn.staticfile.org/Chart.js/4.4.0/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        slate: { 850: '#1e293b', 900: '#0f172a', 950: '#020617' },
+                        primary: { 500: '#3b82f6', 600: '#2563eb' }
+                    },
+                    fontFamily: {
+                        sans: ['Inter', 'system-ui', 'sans-serif'],
+                        mono: ['JetBrains Mono', 'Menlo', 'monospace']
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        [v-cloak] { display: none; }
+        body { background-color: #020617; background-image: radial-gradient(at 0% 0%, #1e293b 0px, transparent 50%), radial-gradient(at 100% 0%, #0f172a 0px, transparent 50%); background-attachment: fixed; color: #e2e8f0; } 
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: #475569; }
+        .glass-card {
+            background-color: rgba(30, 41, 59, 0.7);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+        }
+    </style>
+</head>
+<body class="min-h-screen font-sans antialiased selection:bg-primary-500 selection:text-white">
+    <div id="app" v-cloak class="max-w-[1800px] mx-auto p-4 lg:p-8 space-y-8">
+        
+        <header class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+            <div class="flex items-center gap-4">
+                <div class="relative group">
+                    <div class="absolute -inset-1 bg-gradient-to-r from-blue-600 to-cyan-600 rounded-lg blur opacity-25 group-hover:opacity-50 transition duration-1000 group-hover:duration-200"></div>
+                    <div class="relative bg-slate-900 ring-1 ring-white/10 p-3 rounded-lg text-blue-400">
+                        <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+                    </div>
+                </div>
+                <div>
+                    <h1 class="text-2xl font-bold text-white tracking-tight">WireGuard <span class="text-blue-500">Pro</span></h1>
+                    <div class="flex items-center gap-3 text-sm text-slate-400 mt-1">
+                        <div class="flex items-center gap-2 px-2 py-0.5 rounded-full bg-slate-800/50 border border-slate-700/50">
+                            <span class="relative flex h-2 w-2">
+                              <span v-if="loading" class="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
+                              <span class="relative inline-flex rounded-full h-2 w-2" :class="loading ? 'bg-blue-500' : 'bg-emerald-500'"></span>
+                            </span>
+                            <span class="font-mono text-xs">{{ meta.interface }}:{{ meta.port }}</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="grid grid-cols-3 gap-3 w-full md:w-auto">
+                <div class="glass-card px-4 py-2 rounded-xl flex flex-col items-center justify-center min-w-[100px]">
+                    <span class="text-[10px] text-slate-400 font-bold uppercase tracking-wider">CPU</span>
+                    <span class="text-lg font-bold text-white tabular-nums">{{ sysInfo.cpu_percent.toFixed(1) }}<span class="text-xs text-slate-500 ml-0.5">%</span></span>
+                </div>
+                <div class="glass-card px-4 py-2 rounded-xl flex flex-col items-center justify-center min-w-[100px]">
+                    <span class="text-[10px] text-slate-400 font-bold uppercase tracking-wider">内存</span>
+                    <span class="text-lg font-bold text-white tabular-nums">{{ sysInfo.mem_percent.toFixed(1) }}<span class="text-xs text-slate-500 ml-0.5">%</span></span>
+                </div>
+                <div class="glass-card px-4 py-2 rounded-xl flex flex-col items-center justify-center min-w-[100px]">
+                    <span class="text-[10px] text-slate-400 font-bold uppercase tracking-wider">运行</span>
+                    <span class="text-sm font-bold text-white whitespace-nowrap">{{ formatUptimeShort(sysInfo.uptime) }}</span>
+                </div>
+            </div>
+        </header>
+
+        <main class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+            
+            <section class="lg:col-span-3 glass-card rounded-2xl p-1 shadow-2xl shadow-black/20">
+                <div class="bg-slate-900/50 rounded-xl p-6">
+                    <div class="flex justify-between items-center mb-6">
+                        <div>
+                            <h3 class="text-lg font-bold text-white flex items-center gap-2">
+                                <span class="w-1.5 h-6 bg-blue-500 rounded-full"></span> 
+                                接口流量趋势
+                            </h3>
+                            <div class="flex gap-6 mt-2 text-xs font-mono">
+                                <div class="flex items-center gap-2">
+                                    <span class="w-2 h-2 rounded-full bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.5)]"></span>
+                                    <span class="text-slate-400">上传:</span>
+                                    <span class="text-white font-bold">{{ fmtRate(totalTxRate) }}</span>
+                                </div>
+                                <div class="flex items-center gap-2">
+                                    <span class="w-2 h-2 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]"></span>
+                                    <span class="text-slate-400">下载:</span>
+                                    <span class="text-white font-bold">{{ fmtRate(totalRxRate) }}</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="relative z-10">
+                            <select v-model="mainChartPeriod" @change="changeMainChartPeriod" class="bg-slate-800 border border-slate-700 text-slate-300 text-xs rounded-lg pl-3 pr-8 py-2 focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500 outline-none cursor-pointer hover:bg-slate-750 transition-colors appearance-none">
+                                <option value="realtime">⚡ 实时窗口</option>
+                                <option value="30m">30 分钟</option>
+                                <option value="1h">1 小时</option>
+                                <option value="12h">12 小时</option>
+                                <option value="24h">24 小时</option>
+                                <option value="7d">7 天</option>
+                            </select>
+                            <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-slate-500">
+                                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="relative h-[320px] w-full">
+                        <canvas id="mainChart"></canvas>
+                    </div>
+                </div>
+            </section>
+
+            <section class="lg:col-span-3 glass-card rounded-2xl overflow-hidden shadow-2xl shadow-black/20">
+                <div class="p-5 border-b border-slate-700/50 bg-slate-800/30 flex flex-col sm:flex-row justify-between items-center gap-4">
+                    <h3 class="font-bold text-white text-lg flex items-center gap-3">
+                        客户端
+                        <span class="px-2.5 py-0.5 rounded-full bg-slate-700 text-xs text-slate-300 font-medium">{{ onlineCount }} / {{ peers.length }} 在线</span>
+                    </h3>
+                    
+                    <div class="relative w-full sm:w-64">
+                        <input v-model="searchQuery" type="text" placeholder="搜索别名或 IP..." class="w-full bg-slate-900/80 border border-slate-700 text-slate-200 text-sm rounded-lg pl-10 pr-4 py-2 focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500 outline-none transition-all">
+                        <div class="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none text-slate-500">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left border-collapse">
+                        <thead class="bg-slate-900/80 text-slate-400 font-semibold uppercase text-[11px] tracking-wider">
+                            <tr>
+                                <th class="p-4 border-b border-slate-700/50">状态 / 身份</th>
+                                <th class="p-4 border-b border-slate-700/50">网络信息</th>
+                                <th class="p-4 border-b border-slate-700/50">实时速率 (Mbps)</th>
+                                <th class="p-4 border-b border-slate-700/50">累计消耗</th>
+                                <th class="p-4 border-b border-slate-700/50 text-right">管理</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-slate-800/50 bg-slate-800/10">
+                            <tr v-for="p in filteredPeers" :key="p.public_key" class="group hover:bg-blue-500/5 transition-colors duration-200">
+                                <td class="p-4">
+                                    <div class="flex items-center gap-4">
+                                        <div class="relative">
+                                            <div v-if="p.is_online" class="absolute inset-0 bg-emerald-500 rounded-full animate-ping opacity-20"></div>
+                                            <span class="relative block w-3 h-3 rounded-full shadow-sm ring-2 ring-slate-800" :class="p.is_online ? 'bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.6)]' : 'bg-slate-600'"></span>
+                                        </div>
+                                        <div>
+                                            <div class="flex items-center gap-2">
+                                                <span v-if="editing!==p.public_key" @click="editAlias(p)" class="font-bold text-slate-200 cursor-pointer hover:text-blue-400 border-b border-transparent hover:border-blue-400/50 transition-all text-sm">{{ p.alias || '未命名设备' }}</span>
+                                                <input v-else v-model="tempAlias" @blur="saveAlias(p.public_key)" @keyup.enter="saveAlias(p.public_key)" class="border-b-2 border-blue-500 bg-transparent outline-none font-bold text-white text-sm w-32 px-1" autofocus>
+                                            </div>
+                                            <div class="text-[10px] text-slate-500 font-mono mt-0.5 opacity-60 group-hover:opacity-100 transition-opacity">{{ p.public_key.substring(0,16) }}...</div>
+                                        </div>
+                                    </div>
+                                </td>
+                                <td class="p-4">
+                                    <div class="flex flex-col gap-1">
+                                        <span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-mono bg-slate-700/50 text-slate-300 w-fit">{{ p.allowed_ips[0] }}</span>
+                                        <span class="text-[11px] text-slate-500 truncate max-w-[140px]">{{ p.endpoint }}</span>
+                                    </div>
+                                </td>
+                                <td class="p-4">
+                                    <div class="flex flex-col gap-1 font-mono text-xs">
+                                        <div class="flex items-center gap-2" :class="p.rx_rate > 0 ? 'text-emerald-400' : 'text-slate-600'">
+                                            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 14l-7 7m0 0l-7-7m7 7V3"></path></svg>
+                                            {{ fmtRate(p.rx_rate) }}
+                                        </div>
+                                        <div class="flex items-center gap-2" :class="p.tx_rate > 0 ? 'text-blue-400' : 'text-slate-600'">
+                                            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 10l7-7m0 0l7 7m-7-7v18"></path></svg>
+                                            {{ fmtRate(p.tx_rate) }}
+                                        </div>
+                                    </div>
+                                </td>
+                                <td class="p-4 text-xs">
+                                    <div class="space-y-1">
+                                        <div class="text-slate-400">总下载: <span class="text-slate-200 font-mono">{{ fmtBytes(p.receive_bytes) }}</span></div>
+                                        <div class="text-slate-400">总上传: <span class="text-slate-200 font-mono">{{ fmtBytes(p.transmit_bytes) }}</span></div>
+                                    </div>
+                                </td>
+                                <td class="p-4 text-right">
+                                    <button @click="openDetail(p)" class="group/btn relative inline-flex items-center justify-center p-0.5 overflow-hidden text-xs font-medium rounded-lg group bg-gradient-to-br from-blue-600 to-cyan-600 group-hover:from-blue-600 group-hover:to-cyan-600 hover:text-white text-white focus:ring-4 focus:outline-none focus:ring-blue-800">
+                                        <span class="relative px-3 py-1.5 transition-all ease-in duration-75 bg-slate-900 rounded-md group-hover/btn:bg-opacity-0">
+                                            历史详情
+                                        </span>
+                                    </button>
+                                </td>
+                            </tr>
+                            <tr v-if="filteredPeers.length === 0">
+                                <td colspan="5" class="p-8 text-center text-slate-500 text-sm">
+                                    未找到匹配的客户端
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+        </main>
+
+        <Transition enter-active-class="transition duration-300 ease-out" enter-from-class="opacity-0 scale-95" enter-to-class="opacity-100 scale-100" leave-active-class="transition duration-200 ease-in" leave-from-class="opacity-100 scale-100" leave-to-class="opacity-0 scale-95">
+            <div v-if="modalPeer" class="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 z-50" @click.self="modalPeer=null">
+                <div class="glass-card bg-[#0f172a] rounded-2xl w-full max-w-5xl shadow-2xl border border-slate-700/50 flex flex-col max-h-[90vh]">
+                    <div class="flex justify-between items-center p-6 border-b border-slate-700/50 bg-slate-900/50 rounded-t-2xl">
+                        <div>
+                            <h2 class="text-2xl font-bold text-white">{{ modalPeer.alias || '设备详情' }}</h2>
+                            <p class="text-xs text-slate-400 font-mono mt-1 opacity-70">{{ modalPeer.public_key }}</p>
+                        </div>
+                        <div class="flex items-center gap-4">
+                            <select v-model="historyPeriod" @change="changeHistoryPeriod" class="bg-slate-800 border border-slate-600 text-slate-200 text-xs rounded-lg pl-3 pr-8 py-1.5 focus:border-blue-500 outline-none cursor-pointer">
+                                <option value="realtime">实时监控</option>
+                                <option value="1h">最近 1 小时</option>
+                                <option value="24h">最近 24 小时</option>
+                                <option value="7d">最近 7 天</option>
+                            </select>
+                            <button @click="modalPeer=null" class="text-slate-400 hover:text-white transition-colors bg-slate-800 hover:bg-slate-700 rounded-lg p-1.5">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <div class="p-6 overflow-y-auto bg-[#0b1121]">
+                         <div class="relative h-[400px] w-full bg-slate-900/30 rounded-xl border border-slate-800 p-4">
+                            <canvas id="detailChart"></canvas>
+                            <div v-if="chartLoading" class="absolute inset-0 flex items-center justify-center bg-slate-900/80 z-10 backdrop-blur-sm transition-all">
+                                <div class="flex flex-col items-center gap-3">
+                                    <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+                                    <span class="text-xs text-blue-400">加载数据中...</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </Transition>
+    </div>
+
+    <script>
+        const { createApp, ref, onMounted, onUnmounted, computed, watch } = Vue;
+        
+        Chart.defaults.color = '#64748b';
+        Chart.defaults.borderColor = '#334155';
+        Chart.defaults.font.family = "'Inter', system-ui, sans-serif";
+        Chart.defaults.plugins.tooltip.backgroundColor = 'rgba(15, 23, 42, 0.9)';
+        Chart.defaults.plugins.tooltip.borderColor = 'rgba(51, 65, 85, 0.5)';
+        Chart.defaults.plugins.tooltip.borderWidth = 1;
+        Chart.defaults.plugins.tooltip.padding = 10;
+        Chart.defaults.plugins.tooltip.cornerRadius = 8;
+
+        function createGradient(ctx, colorStart, colorEnd) {
+            const gradient = ctx.createLinearGradient(0, 0, 0, 400);
+            gradient.addColorStop(0, colorStart);
+            gradient.addColorStop(1, colorEnd);
+            return gradient;
+        }
+
+        createApp({
+            setup() {
+                const peers = ref([]);
+                const meta = ref({interface: '...', port: '...'});
+                const sysInfo = ref({cpu_percent:0, mem_percent:0, cpu_temp:0, uptime:0});
+                const editing = ref(null);
+                const tempAlias = ref('');
+                const loading = ref(false);
+                const modalPeer = ref(null);
+                const historyPeriod = ref('realtime');
+                const mainChartPeriod = ref('realtime');
+                const chartLoading = ref(false);
+                const searchQuery = ref('');
+                
+                let chartInst = null, mainChartInst = null, pollTimer = null;
+
+                const fmtBytes = (b) => {
+                    if (b===0) return '0 B';
+                    const k=1024, sizes=['B','KB','MB','GB','TB'];
+                    const i=Math.floor(Math.log(b)/Math.log(k));
+                    return parseFloat((b/Math.pow(k,i)).toFixed(2))+' '+sizes[i];
+                };
+
+                const fmtRate = (val) => {
+                    if (!val || val < 0.01) return '0 Mbps';
+                    return val.toFixed(2) + ' Mbps';
+                };
+                
+                const formatUptimeShort = (sec) => {
+                    const d = Math.floor(sec / 86400);
+                    const h = Math.floor((sec % 86400) / 3600);
+                    const m = Math.floor((sec % 3600) / 60);
+                    if(d>0) return `${d}天 ${h}小时`;
+                    return `${h}小时 ${m}分`;
+                };
+
+                const totalRxRate = computed(() => peers.value.reduce((a,b)=>a+(b.rx_rate||0),0));
+                const totalTxRate = computed(() => peers.value.reduce((a,b)=>a+(b.tx_rate||0),0));
+                const onlineCount = computed(() => peers.value.filter(p=>p.is_online).length);
+                
+                const filteredPeers = computed(() => {
+                    if (!searchQuery.value) return peers.value;
+                    const q = searchQuery.value.toLowerCase();
+                    return peers.value.filter(p => 
+                        (p.alias && p.alias.toLowerCase().includes(q)) || 
+                        (p.allowed_ips[0] && p.allowed_ips[0].includes(q))
+                    );
+                });
+
+                const fetchData = async () => {
+                    try {
+                        const [pRes, sRes] = await Promise.all([
+                            axios.get('/api/peers'),
+                            axios.get('/api/system')
+                        ]);
+                        peers.value = pRes.data.peers || [];
+                        meta.value = {interface: pRes.data.interface, port: pRes.data.port};
+                        sysInfo.value = sRes.data;
+                    } catch(e){}
+                };
+
+                const changeMainChartPeriod = () => {
+                    if (mainChartInst) {
+                        mainChartInst.destroy();
+                        mainChartInst = null;
+                    }
+                    fetchMainChart();
+                }
+
+                const changeHistoryPeriod = () => {
+                    if (chartInst) {
+                        chartInst.destroy();
+                        chartInst = null;
+                    }
+                    fetchHistory(modalPeer.value.public_key);
+                }
+
+                const fetchMainChart = async () => {
+                    try {
+                        const res = await axios.get('/api/chart/traffic?period=' + mainChartPeriod.value);
+                        renderMainChart(res.data.labels, res.data.rx, res.data.tx);
+                    } catch(e){}
+                };
+
+                const renderMainChart = (labels, rx, tx) => {
+                    const ctxEl = document.getElementById('mainChart');
+                    if (!ctxEl) return;
+                    const ctx = ctxEl.getContext('2d');
+
+                    // [关键] 后端返回 Unix 秒，转换为毫秒
+                    const timeLabels = labels.map(t => t * 1000);
+
+                    if (mainChartInst) {
+                        mainChartInst.data.labels = timeLabels;
+                        mainChartInst.data.datasets[0].data = tx;
+                        mainChartInst.data.datasets[1].data = rx;
+                        mainChartInst.update('none'); 
+                        return;
+                    }
+                    
+                    let unit = 'minute';
+                    if (mainChartPeriod.value === '7d' || mainChartPeriod.value === '24h') unit = 'hour';
+
+                    mainChartInst = new Chart(ctx, {
+                        type: 'line',
+                        data: {
+                            labels: timeLabels,
+                            datasets: [
+                                { 
+                                    label: '上传', 
+                                    data: tx, 
+                                    borderColor: '#3b82f6', 
+                                    backgroundColor: createGradient(ctx, 'rgba(59, 130, 246, 0.3)', 'rgba(59, 130, 246, 0.0)'),
+                                    borderWidth: 2, 
+                                    tension: 0.4, 
+                                    fill: true, 
+                                    pointRadius: 0, 
+                                    pointHoverRadius: 4 
+                                },
+                                { 
+                                    label: '下载', 
+                                    data: rx, 
+                                    borderColor: '#10b981', 
+                                    backgroundColor: createGradient(ctx, 'rgba(16, 185, 129, 0.3)', 'rgba(16, 185, 129, 0.0)'),
+                                    borderWidth: 2, 
+                                    tension: 0.4, 
+                                    fill: true, 
+                                    pointRadius: 0, 
+                                    pointHoverRadius: 4 
+                                }
+                            ]
+                        },
+                        options: { 
+                            responsive: true, 
+                            maintainAspectRatio: false, 
+                            animation: false,
+                            plugins: { 
+                                legend: { display: false }, 
+                                tooltip: { 
+                                    mode: 'index', intersect: false, 
+                                    callbacks: { label: (ctx) => ctx.dataset.label + ': ' + ctx.parsed.y.toFixed(2) + ' Mbps' }
+                                }
+                            }, 
+                            scales: { 
+                                x: { 
+                                    type: 'time',
+                                    time: { unit: unit, tooltipFormat: 'yyyy-MM-dd HH:mm:ss', displayFormats: { minute: 'HH:mm', hour: 'MM-dd HH:mm' } },
+                                    grid: { display: false },
+                                    ticks: { maxTicksLimit: 8, color: '#64748b' }
+                                },
+                                y: { 
+                                    beginAtZero: true, 
+                                    border: { display: false },
+                                    grid: { color: '#1e293b' },
+                                    ticks: { color: '#64748b', callback: (val) => val + ' M' } 
+                                } 
+                            },
+                            interaction: { mode: 'nearest', axis: 'x', intersect: false }
+                        }
+                    });
+                };
+
+                const fetchHistory = async (pk) => {
+                    chartLoading.value = true;
+                    try {
+                        const res = await axios.get('/api/history/'+pk+'?period='+historyPeriod.value);
+                        const data = res.data;
+                        renderDetailChart(data.labels, data.rates.rx, data.rates.tx);
+                    } finally { chartLoading.value = false; }
+                };
+
+                const renderDetailChart = (labels, rx, tx) => {
+                    const ctxEl = document.getElementById('detailChart');
+                    if (!ctxEl) return;
+                    const ctx = ctxEl.getContext('2d');
+
+                    // [关键] 时间戳转换
+                    const timeLabels = labels.map(t => t * 1000);
+
+                    if (chartInst) {
+                        chartInst.data.labels = timeLabels;
+                        chartInst.data.datasets[0].data = rx; 
+                        chartInst.data.datasets[1].data = tx;
+                        chartInst.update('none');
+                        return;
+                    }
+
+                    let unit = 'minute';
+                    if (historyPeriod.value === '7d' || historyPeriod.value === '24h') unit = 'hour';
+                    
+                    chartInst = new Chart(ctx, {
+                        type: 'line',
+                        data: {
+                            labels: timeLabels,
+                            datasets: [
+                                { 
+                                    label: '下载 (Mbps)', 
+                                    data: rx, 
+                                    borderColor: '#10b981', 
+                                    backgroundColor: createGradient(ctx, 'rgba(16, 185, 129, 0.2)', 'rgba(16, 185, 129, 0)'),
+                                    fill: true, 
+                                    tension: 0.4, 
+                                    pointRadius: 0 
+                                },
+                                { 
+                                    label: '上传 (Mbps)', 
+                                    data: tx, 
+                                    borderColor: '#3b82f6', 
+                                    backgroundColor: createGradient(ctx, 'rgba(59, 130, 246, 0.2)', 'rgba(59, 130, 246, 0)'),
+                                    fill: true, 
+                                    tension: 0.4, 
+                                    pointRadius: 0 
+                                }
+                            ]
+                        },
+                        options: { 
+                            responsive: true, maintainAspectRatio: false, 
+                            interaction: { mode: 'index', intersect: false },
+                            plugins: {
+                                legend: { labels: { color: '#94a3b8' } },
+                                tooltip: {
+                                    callbacks: { label: (ctx) => ctx.dataset.label + ': ' + ctx.parsed.y.toFixed(2) + ' Mbps' }
+                                }
+                            },
+                            scales: { 
+                                x: { 
+                                    type: 'time',
+                                    time: { unit: unit, tooltipFormat: 'yyyy-MM-dd HH:mm:ss', displayFormats: { minute: 'HH:mm', hour: 'MM-dd HH:mm' } },
+                                    grid: { display: false }
+                                },
+                                y: {
+                                    beginAtZero: true,
+                                    grid: { color: '#1e293b' },
+                                    ticks: { callback: (val) => val + ' M' }
+                                }
+                            }
+                        }
+                    });
+                };
+
+                const handleVisibility = () => {
+                    if (document.hidden) {
+                        clearInterval(pollTimer);
+                    } else {
+                        fetchData(); fetchMainChart();
+                        pollTimer = setInterval(() => { fetchData(); fetchMainChart(); }, 3000);
+                    }
+                };
+
+                onMounted(() => {
+                    fetchData();
+                    fetchMainChart();
+                    pollTimer = setInterval(() => { fetchData(); fetchMainChart(); }, 3000);
+                    document.addEventListener('visibilitychange', handleVisibility);
+                });
+                onUnmounted(() => {
+                    clearInterval(pollTimer);
+                    document.removeEventListener('visibilitychange', handleVisibility);
+                });
+
+                return {
+                    peers, meta, sysInfo, editing, tempAlias, loading, modalPeer, historyPeriod, mainChartPeriod, chartLoading, searchQuery, filteredPeers,
+                    totalRxRate, totalTxRate, onlineCount,
+                    fmtBytes, fmtRate, formatUptimeShort, 
+                    saveAlias: async (pk) => { if(!pk)return; await axios.post('/api/alias', {public_key: pk, alias: tempAlias.value}); editing.value=null; fetchData(); },
+                    editAlias: (p) => { editing.value = p.public_key; tempAlias.value = p.alias||''; },
+                    openDetail: (p) => { modalPeer.value=p; fetchHistory(p.public_key); },
+                    changeMainChartPeriod, changeHistoryPeriod
+                };
+            }
+        }).mount('#app');
+    </script>
+</body>
+</html>
