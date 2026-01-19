@@ -39,217 +39,256 @@
             -webkit-backdrop-filter: blur(12px);
             border: 1px solid rgba(255, 255, 255, 0.05);
         }
+        .login-bg {
+            background: radial-gradient(circle at center, #1e293b 0%, #020617 100%);
+        }
     </style>
 </head>
 <body class="min-h-screen font-sans antialiased selection:bg-primary-500 selection:text-white">
-    <div id="app" v-cloak class="max-w-[1800px] mx-auto p-4 lg:p-8 space-y-8">
+    <div id="app" v-cloak>
         
-        <header class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-            <div class="flex items-center gap-4">
-                <div class="relative group">
-                    <div class="absolute -inset-1 bg-gradient-to-r from-blue-600 to-cyan-600 rounded-lg blur opacity-25 group-hover:opacity-50 transition duration-1000 group-hover:duration-200"></div>
-                    <div class="relative bg-slate-900 ring-1 ring-white/10 p-3 rounded-lg text-blue-400">
-                        <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+        <div v-if="!token" class="min-h-screen flex items-center justify-center p-4 login-bg">
+            <div class="glass-card w-full max-w-md p-8 rounded-2xl shadow-2xl border border-slate-700/50">
+                <div class="text-center mb-8">
+                    <div class="inline-flex items-center justify-center w-16 h-16 rounded-full bg-blue-500/10 mb-4 ring-1 ring-blue-500/30">
+                        <svg class="w-8 h-8 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
                     </div>
+                    <h1 class="text-2xl font-bold text-white">管理员登录</h1>
+                    <p class="text-slate-400 text-sm mt-2">请输入密码以访问 WireGuard 仪表盘</p>
                 </div>
-                <div>
-                    <h1 class="text-2xl font-bold text-white tracking-tight">WireGuard <span class="text-blue-500">Pro</span></h1>
-                    <div class="flex items-center gap-3 text-sm text-slate-400 mt-1">
-                        <div class="flex items-center gap-2 px-2 py-0.5 rounded-full bg-slate-800/50 border border-slate-700/50">
-                            <span class="relative flex h-2 w-2">
-                              <span v-if="loading" class="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
-                              <span class="relative inline-flex rounded-full h-2 w-2" :class="loading ? 'bg-blue-500' : 'bg-emerald-500'"></span>
-                            </span>
-                            <span class="font-mono text-xs">{{ meta.interface }}:{{ meta.port }}</span>
-                        </div>
+                
+                <form @submit.prevent="handleLogin" class="space-y-6">
+                    <div>
+                        <input v-model="loginPassword" type="password" placeholder="输入密码..." class="w-full bg-slate-900/50 border border-slate-700 text-white rounded-xl px-4 py-3 focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all placeholder-slate-500" required>
                     </div>
-                </div>
+                    <div v-if="loginError" class="text-red-400 text-sm text-center bg-red-500/10 py-2 rounded-lg border border-red-500/20">
+                        {{ loginError }}
+                    </div>
+                    <button type="submit" :disabled="isLoggingIn" class="w-full bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-500 hover:to-cyan-500 text-white font-bold py-3 rounded-xl transition-all transform active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-blue-500/20">
+                        <span v-if="isLoggingIn" class="flex items-center justify-center gap-2">
+                            <svg class="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                            验证中...
+                        </span>
+                        <span v-else>进入仪表盘</span>
+                    </button>
+                </form>
             </div>
-            
-            <div class="grid grid-cols-3 gap-3 w-full md:w-auto">
-                <div class="glass-card px-4 py-2 rounded-xl flex flex-col items-center justify-center min-w-[100px]">
-                    <span class="text-[10px] text-slate-400 font-bold uppercase tracking-wider">CPU</span>
-                    <span class="text-lg font-bold text-white tabular-nums">{{ sysInfo.cpu_percent.toFixed(1) }}<span class="text-xs text-slate-500 ml-0.5">%</span></span>
-                </div>
-                <div class="glass-card px-4 py-2 rounded-xl flex flex-col items-center justify-center min-w-[100px]">
-                    <span class="text-[10px] text-slate-400 font-bold uppercase tracking-wider">内存</span>
-                    <span class="text-lg font-bold text-white tabular-nums">{{ sysInfo.mem_percent.toFixed(1) }}<span class="text-xs text-slate-500 ml-0.5">%</span></span>
-                </div>
-                <div class="glass-card px-4 py-2 rounded-xl flex flex-col items-center justify-center min-w-[100px]">
-                    <span class="text-[10px] text-slate-400 font-bold uppercase tracking-wider">运行</span>
-                    <span class="text-sm font-bold text-white whitespace-nowrap">{{ formatUptimeShort(sysInfo.uptime) }}</span>
-                </div>
-            </div>
-        </header>
+        </div>
 
-        <main class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+        <div v-else class="max-w-[1800px] mx-auto p-4 lg:p-8 space-y-8 transition-opacity duration-500">
             
-            <section class="lg:col-span-3 glass-card rounded-2xl p-1 shadow-2xl shadow-black/20">
-                <div class="bg-slate-900/50 rounded-xl p-6">
-                    <div class="flex justify-between items-center mb-6">
-                        <div>
-                            <h3 class="text-lg font-bold text-white flex items-center gap-2">
-                                <span class="w-1.5 h-6 bg-blue-500 rounded-full"></span> 
-                                接口流量趋势
-                            </h3>
-                            <div class="flex gap-6 mt-2 text-xs font-mono">
-                                <div class="flex items-center gap-2">
-                                    <span class="w-2 h-2 rounded-full bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.5)]"></span>
-                                    <span class="text-slate-400">上传:</span>
-                                    <span class="text-white font-bold">{{ fmtRate(totalTxRate) }}</span>
-                                </div>
-                                <div class="flex items-center gap-2">
-                                    <span class="w-2 h-2 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]"></span>
-                                    <span class="text-slate-400">下载:</span>
-                                    <span class="text-white font-bold">{{ fmtRate(totalRxRate) }}</span>
-                                </div>
-                            </div>
+            <header class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                <div class="flex items-center gap-4">
+                    <div class="relative group">
+                        <div class="absolute -inset-1 bg-gradient-to-r from-blue-600 to-cyan-600 rounded-lg blur opacity-25 group-hover:opacity-50 transition duration-1000 group-hover:duration-200"></div>
+                        <div class="relative bg-slate-900 ring-1 ring-white/10 p-3 rounded-lg text-blue-400">
+                            <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
                         </div>
-                        <div class="relative z-10">
-                            <select v-model="mainChartPeriod" @change="changeMainChartPeriod" class="bg-slate-800 border border-slate-700 text-slate-300 text-xs rounded-lg pl-3 pr-8 py-2 focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500 outline-none cursor-pointer hover:bg-slate-750 transition-colors appearance-none">
-                                <option value="realtime">⚡ 实时窗口</option>
-                                <option value="30m">30 分钟</option>
-                                <option value="1h">1 小时</option>
-                                <option value="12h">12 小时</option>
-                                <option value="24h">24 小时</option>
-                                <option value="7d">7 天</option>
-                            </select>
-                            <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-slate-500">
-                                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+                    </div>
+                    <div>
+                        <h1 class="text-2xl font-bold text-white tracking-tight">WireGuard <span class="text-blue-500">Pro</span></h1>
+                        <div class="flex items-center gap-3 text-sm text-slate-400 mt-1">
+                            <div class="flex items-center gap-2 px-2 py-0.5 rounded-full bg-slate-800/50 border border-slate-700/50">
+                                <span class="relative flex h-2 w-2">
+                                  <span v-if="loading" class="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
+                                  <span class="relative inline-flex rounded-full h-2 w-2" :class="loading ? 'bg-blue-500' : 'bg-emerald-500'"></span>
+                                </span>
+                                <span class="font-mono text-xs">{{ meta.interface }}:{{ meta.port }}</span>
                             </div>
                         </div>
                     </div>
-                    <div class="relative h-[320px] w-full">
-                        <canvas id="mainChart"></canvas>
-                    </div>
                 </div>
-            </section>
-
-            <section class="lg:col-span-3 glass-card rounded-2xl overflow-hidden shadow-2xl shadow-black/20">
-                <div class="p-5 border-b border-slate-700/50 bg-slate-800/30 flex flex-col sm:flex-row justify-between items-center gap-4">
-                    <h3 class="font-bold text-white text-lg flex items-center gap-3">
-                        客户端
-                        <span class="px-2.5 py-0.5 rounded-full bg-slate-700 text-xs text-slate-300 font-medium">{{ onlineCount }} / {{ peers.length }} 在线</span>
-                    </h3>
-                    
-                    <div class="relative w-full sm:w-64">
-                        <input v-model="searchQuery" type="text" placeholder="搜索别名或 IP..." class="w-full bg-slate-900/80 border border-slate-700 text-slate-200 text-sm rounded-lg pl-10 pr-4 py-2 focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500 outline-none transition-all">
-                        <div class="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none text-slate-500">
-                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
+                
+                <div class="flex items-center gap-4 w-full md:w-auto">
+                    <div class="grid grid-cols-3 gap-3 flex-1">
+                        <div class="glass-card px-4 py-2 rounded-xl flex flex-col items-center justify-center min-w-[80px]">
+                            <span class="text-[10px] text-slate-400 font-bold uppercase tracking-wider">CPU</span>
+                            <span class="text-lg font-bold text-white tabular-nums">{{ sysInfo.cpu_percent.toFixed(1) }}<span class="text-xs text-slate-500 ml-0.5">%</span></span>
+                        </div>
+                        <div class="glass-card px-4 py-2 rounded-xl flex flex-col items-center justify-center min-w-[80px]">
+                            <span class="text-[10px] text-slate-400 font-bold uppercase tracking-wider">内存</span>
+                            <span class="text-lg font-bold text-white tabular-nums">{{ sysInfo.mem_percent.toFixed(1) }}<span class="text-xs text-slate-500 ml-0.5">%</span></span>
+                        </div>
+                        <div class="glass-card px-4 py-2 rounded-xl flex flex-col items-center justify-center min-w-[80px]">
+                            <span class="text-[10px] text-slate-400 font-bold uppercase tracking-wider">运行</span>
+                            <span class="text-sm font-bold text-white whitespace-nowrap">{{ formatUptimeShort(sysInfo.uptime) }}</span>
                         </div>
                     </div>
+                    <button @click="logout" class="glass-card p-3 rounded-xl hover:bg-red-500/10 hover:border-red-500/30 text-slate-400 hover:text-red-400 transition-all" title="退出登录">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"></path></svg>
+                    </button>
                 </div>
+            </header>
 
-                <div class="overflow-x-auto">
-                    <table class="w-full text-left border-collapse">
-                        <thead class="bg-slate-900/80 text-slate-400 font-semibold uppercase text-[11px] tracking-wider">
-                            <tr>
-                                <th class="p-4 border-b border-slate-700/50">状态 / 身份</th>
-                                <th class="p-4 border-b border-slate-700/50">网络信息</th>
-                                <th class="p-4 border-b border-slate-700/50">实时速率 (Mbps)</th>
-                                <th class="p-4 border-b border-slate-700/50">累计消耗</th>
-                                <th class="p-4 border-b border-slate-700/50 text-right">管理</th>
-                            </tr>
-                        </thead>
-                        <tbody class="divide-y divide-slate-800/50 bg-slate-800/10">
-                            <tr v-for="p in filteredPeers" :key="p.public_key" class="group hover:bg-blue-500/5 transition-colors duration-200">
-                                <td class="p-4">
-                                    <div class="flex items-center gap-4">
-                                        <div class="relative">
-                                            <div v-if="p.is_online" class="absolute inset-0 bg-emerald-500 rounded-full animate-ping opacity-20"></div>
-                                            <span class="relative block w-3 h-3 rounded-full shadow-sm ring-2 ring-slate-800" :class="p.is_online ? 'bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.6)]' : 'bg-slate-600'"></span>
-                                        </div>
-                                        <div>
-                                            <div class="flex items-center gap-2">
-                                                <span v-if="editing!==p.public_key" @click="editAlias(p)" class="font-bold text-slate-200 cursor-pointer hover:text-blue-400 border-b border-transparent hover:border-blue-400/50 transition-all text-sm">{{ p.alias || '未命名设备' }}</span>
-                                                <input v-else v-model="tempAlias" @blur="saveAlias(p.public_key)" @keyup.enter="saveAlias(p.public_key)" class="border-b-2 border-blue-500 bg-transparent outline-none font-bold text-white text-sm w-32 px-1" autofocus>
+            <main class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                
+                <section class="lg:col-span-3 glass-card rounded-2xl p-1 shadow-2xl shadow-black/20">
+                    <div class="bg-slate-900/50 rounded-xl p-6">
+                        <div class="flex justify-between items-center mb-6">
+                            <div>
+                                <h3 class="text-lg font-bold text-white flex items-center gap-2">
+                                    <span class="w-1.5 h-6 bg-blue-500 rounded-full"></span> 
+                                    接口流量趋势
+                                </h3>
+                                <div class="flex gap-6 mt-2 text-xs font-mono">
+                                    <div class="flex items-center gap-2">
+                                        <span class="w-2 h-2 rounded-full bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.5)]"></span>
+                                        <span class="text-slate-400">上传:</span>
+                                        <span class="text-white font-bold">{{ fmtRate(totalTxRate) }}</span>
+                                    </div>
+                                    <div class="flex items-center gap-2">
+                                        <span class="w-2 h-2 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]"></span>
+                                        <span class="text-slate-400">下载:</span>
+                                        <span class="text-white font-bold">{{ fmtRate(totalRxRate) }}</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="relative z-10">
+                                <select v-model="mainChartPeriod" @change="changeMainChartPeriod" class="bg-slate-800 border border-slate-700 text-slate-300 text-xs rounded-lg pl-3 pr-8 py-2 focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500 outline-none cursor-pointer hover:bg-slate-750 transition-colors appearance-none">
+                                    <option value="realtime">⚡ 实时窗口</option>
+                                    <option value="30m">30 分钟</option>
+                                    <option value="1h">1 小时</option>
+                                    <option value="12h">12 小时</option>
+                                    <option value="24h">24 小时</option>
+                                    <option value="7d">7 天</option>
+                                </select>
+                                <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-slate-500">
+                                    <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="relative h-[320px] w-full">
+                            <canvas id="mainChart"></canvas>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="lg:col-span-3 glass-card rounded-2xl overflow-hidden shadow-2xl shadow-black/20">
+                    <div class="p-5 border-b border-slate-700/50 bg-slate-800/30 flex flex-col sm:flex-row justify-between items-center gap-4">
+                        <h3 class="font-bold text-white text-lg flex items-center gap-3">
+                            客户端
+                            <span class="px-2.5 py-0.5 rounded-full bg-slate-700 text-xs text-slate-300 font-medium">{{ onlineCount }} / {{ peers.length }} 在线</span>
+                        </h3>
+                        
+                        <div class="relative w-full sm:w-64">
+                            <input v-model="searchQuery" type="text" placeholder="搜索别名或 IP..." class="w-full bg-slate-900/80 border border-slate-700 text-slate-200 text-sm rounded-lg pl-10 pr-4 py-2 focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500 outline-none transition-all">
+                            <div class="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none text-slate-500">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left border-collapse">
+                            <thead class="bg-slate-900/80 text-slate-400 font-semibold uppercase text-[11px] tracking-wider">
+                                <tr>
+                                    <th class="p-4 border-b border-slate-700/50">状态 / 身份</th>
+                                    <th class="p-4 border-b border-slate-700/50">网络信息</th>
+                                    <th class="p-4 border-b border-slate-700/50">实时速率 (Mbps)</th>
+                                    <th class="p-4 border-b border-slate-700/50">累计消耗</th>
+                                    <th class="p-4 border-b border-slate-700/50 text-right">管理</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-slate-800/50 bg-slate-800/10">
+                                <tr v-for="p in filteredPeers" :key="p.public_key" class="group hover:bg-blue-500/5 transition-colors duration-200">
+                                    <td class="p-4">
+                                        <div class="flex items-center gap-4">
+                                            <div class="relative">
+                                                <div v-if="p.is_online" class="absolute inset-0 bg-emerald-500 rounded-full animate-ping opacity-20"></div>
+                                                <span class="relative block w-3 h-3 rounded-full shadow-sm ring-2 ring-slate-800" :class="p.is_online ? 'bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.6)]' : 'bg-slate-600'"></span>
                                             </div>
-                                            <div class="text-[10px] text-slate-500 font-mono mt-0.5 opacity-60 group-hover:opacity-100 transition-opacity">{{ p.public_key.substring(0,16) }}...</div>
+                                            <div>
+                                                <div class="flex items-center gap-2">
+                                                    <span v-if="editing!==p.public_key" @click="editAlias(p)" class="font-bold text-slate-200 cursor-pointer hover:text-blue-400 border-b border-transparent hover:border-blue-400/50 transition-all text-sm">{{ p.alias || '未命名设备' }}</span>
+                                                    <input v-else v-model="tempAlias" @blur="saveAlias(p.public_key)" @keyup.enter="saveAlias(p.public_key)" class="border-b-2 border-blue-500 bg-transparent outline-none font-bold text-white text-sm w-32 px-1" autofocus>
+                                                </div>
+                                                <div class="text-[10px] text-slate-500 font-mono mt-0.5 opacity-60 group-hover:opacity-100 transition-opacity">{{ p.public_key.substring(0,16) }}...</div>
+                                            </div>
                                         </div>
-                                    </div>
-                                </td>
-                                <td class="p-4">
-                                    <div class="flex flex-col gap-1">
-                                        <span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-mono bg-slate-700/50 text-slate-300 w-fit">{{ p.allowed_ips[0] }}</span>
-                                        <span class="text-[11px] text-slate-500 truncate max-w-[140px]">{{ p.endpoint }}</span>
-                                    </div>
-                                </td>
-                                <td class="p-4">
-                                    <div class="flex flex-col gap-1 font-mono text-xs">
-                                        <div class="flex items-center gap-2" :class="p.rx_rate > 0 ? 'text-emerald-400' : 'text-slate-600'">
-                                            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 14l-7 7m0 0l-7-7m7 7V3"></path></svg>
-                                            {{ fmtRate(p.rx_rate) }}
+                                    </td>
+                                    <td class="p-4">
+                                        <div class="flex flex-col gap-1">
+                                            <span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-mono bg-slate-700/50 text-slate-300 w-fit">{{ p.allowed_ips[0] }}</span>
+                                            <span class="text-[11px] text-slate-500 truncate max-w-[140px]">{{ p.endpoint }}</span>
                                         </div>
-                                        <div class="flex items-center gap-2" :class="p.tx_rate > 0 ? 'text-blue-400' : 'text-slate-600'">
-                                            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 10l7-7m0 0l7 7m-7-7v18"></path></svg>
-                                            {{ fmtRate(p.tx_rate) }}
+                                    </td>
+                                    <td class="p-4">
+                                        <div class="flex flex-col gap-1 font-mono text-xs">
+                                            <div class="flex items-center gap-2" :class="p.rx_rate > 0 ? 'text-emerald-400' : 'text-slate-600'">
+                                                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 14l-7 7m0 0l-7-7m7 7V3"></path></svg>
+                                                {{ fmtRate(p.rx_rate) }}
+                                            </div>
+                                            <div class="flex items-center gap-2" :class="p.tx_rate > 0 ? 'text-blue-400' : 'text-slate-600'">
+                                                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 10l7-7m0 0l7 7m-7-7v18"></path></svg>
+                                                {{ fmtRate(p.tx_rate) }}
+                                            </div>
                                         </div>
-                                    </div>
-                                </td>
-                                <td class="p-4 text-xs">
-                                    <div class="space-y-1">
-                                        <div class="text-slate-400">总下载: <span class="text-slate-200 font-mono">{{ fmtBytes(p.receive_bytes) }}</span></div>
-                                        <div class="text-slate-400">总上传: <span class="text-slate-200 font-mono">{{ fmtBytes(p.transmit_bytes) }}</span></div>
-                                    </div>
-                                </td>
-                                <td class="p-4 text-right">
-                                    <button @click="openDetail(p)" class="group/btn relative inline-flex items-center justify-center p-0.5 overflow-hidden text-xs font-medium rounded-lg group bg-gradient-to-br from-blue-600 to-cyan-600 group-hover:from-blue-600 group-hover:to-cyan-600 hover:text-white text-white focus:ring-4 focus:outline-none focus:ring-blue-800">
-                                        <span class="relative px-3 py-1.5 transition-all ease-in duration-75 bg-slate-900 rounded-md group-hover/btn:bg-opacity-0">
-                                            历史详情
-                                        </span>
-                                    </button>
-                                </td>
-                            </tr>
-                            <tr v-if="filteredPeers.length === 0">
-                                <td colspan="5" class="p-8 text-center text-slate-500 text-sm">
-                                    未找到匹配的客户端
-                                </td>
-                            </tr>
-                        </tbody>
-                    </table>
-                </div>
-            </section>
-        </main>
-
-        <Transition enter-active-class="transition duration-300 ease-out" enter-from-class="opacity-0 scale-95" enter-to-class="opacity-100 scale-100" leave-active-class="transition duration-200 ease-in" leave-from-class="opacity-100 scale-100" leave-to-class="opacity-0 scale-95">
-            <div v-if="modalPeer" class="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 z-50" @click.self="modalPeer=null">
-                <div class="glass-card bg-[#0f172a] rounded-2xl w-full max-w-5xl shadow-2xl border border-slate-700/50 flex flex-col max-h-[90vh]">
-                    <div class="flex justify-between items-center p-6 border-b border-slate-700/50 bg-slate-900/50 rounded-t-2xl">
-                        <div>
-                            <h2 class="text-2xl font-bold text-white">{{ modalPeer.alias || '设备详情' }}</h2>
-                            <p class="text-xs text-slate-400 font-mono mt-1 opacity-70">{{ modalPeer.public_key }}</p>
-                        </div>
-                        <div class="flex items-center gap-4">
-                            <select v-model="historyPeriod" @change="changeHistoryPeriod" class="bg-slate-800 border border-slate-600 text-slate-200 text-xs rounded-lg pl-3 pr-8 py-1.5 focus:border-blue-500 outline-none cursor-pointer">
-                                <option value="realtime">实时监控</option>
-                                <option value="1h">最近 1 小时</option>
-                                <option value="24h">最近 24 小时</option>
-                                <option value="7d">最近 7 天</option>
-                            </select>
-                            <button @click="modalPeer=null" class="text-slate-400 hover:text-white transition-colors bg-slate-800 hover:bg-slate-700 rounded-lg p-1.5">
-                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
-                            </button>
-                        </div>
+                                    </td>
+                                    <td class="p-4 text-xs">
+                                        <div class="space-y-1">
+                                            <div class="text-slate-400">总下载: <span class="text-slate-200 font-mono">{{ fmtBytes(p.receive_bytes) }}</span></div>
+                                            <div class="text-slate-400">总上传: <span class="text-slate-200 font-mono">{{ fmtBytes(p.transmit_bytes) }}</span></div>
+                                        </div>
+                                    </td>
+                                    <td class="p-4 text-right">
+                                        <button @click="openDetail(p)" class="group/btn relative inline-flex items-center justify-center p-0.5 overflow-hidden text-xs font-medium rounded-lg group bg-gradient-to-br from-blue-600 to-cyan-600 group-hover:from-blue-600 group-hover:to-cyan-600 hover:text-white text-white focus:ring-4 focus:outline-none focus:ring-blue-800">
+                                            <span class="relative px-3 py-1.5 transition-all ease-in duration-75 bg-slate-900 rounded-md group-hover/btn:bg-opacity-0">
+                                                历史详情
+                                            </span>
+                                        </button>
+                                    </td>
+                                </tr>
+                                <tr v-if="filteredPeers.length === 0">
+                                    <td colspan="5" class="p-8 text-center text-slate-500 text-sm">
+                                        未找到匹配的客户端
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
                     </div>
-                    
-                    <div class="p-6 overflow-y-auto bg-[#0b1121]">
-                         <div class="relative h-[400px] w-full bg-slate-900/30 rounded-xl border border-slate-800 p-4">
-                            <canvas id="detailChart"></canvas>
-                            <div v-if="chartLoading" class="absolute inset-0 flex items-center justify-center bg-slate-900/80 z-10 backdrop-blur-sm transition-all">
-                                <div class="flex flex-col items-center gap-3">
-                                    <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
-                                    <span class="text-xs text-blue-400">加载数据中...</span>
+                </section>
+            </main>
+
+            <Transition enter-active-class="transition duration-300 ease-out" enter-from-class="opacity-0 scale-95" enter-to-class="opacity-100 scale-100" leave-active-class="transition duration-200 ease-in" leave-from-class="opacity-100 scale-100" leave-to-class="opacity-0 scale-95">
+                <div v-if="modalPeer" class="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 z-50" @click.self="modalPeer=null">
+                    <div class="glass-card bg-[#0f172a] rounded-2xl w-full max-w-5xl shadow-2xl border border-slate-700/50 flex flex-col max-h-[90vh]">
+                        <div class="flex justify-between items-center p-6 border-b border-slate-700/50 bg-slate-900/50 rounded-t-2xl">
+                            <div>
+                                <h2 class="text-2xl font-bold text-white">{{ modalPeer.alias || '设备详情' }}</h2>
+                                <p class="text-xs text-slate-400 font-mono mt-1 opacity-70">{{ modalPeer.public_key }}</p>
+                            </div>
+                            <div class="flex items-center gap-4">
+                                <select v-model="historyPeriod" @change="changeHistoryPeriod" class="bg-slate-800 border border-slate-600 text-slate-200 text-xs rounded-lg pl-3 pr-8 py-1.5 focus:border-blue-500 outline-none cursor-pointer">
+                                    <option value="realtime">实时监控</option>
+                                    <option value="1h">最近 1 小时</option>
+                                    <option value="24h">最近 24 小时</option>
+                                    <option value="7d">最近 7 天</option>
+                                </select>
+                                <button @click="modalPeer=null" class="text-slate-400 hover:text-white transition-colors bg-slate-800 hover:bg-slate-700 rounded-lg p-1.5">
+                                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                                </button>
+                            </div>
+                        </div>
+                        
+                        <div class="p-6 overflow-y-auto bg-[#0b1121]">
+                             <div class="relative h-[400px] w-full bg-slate-900/30 rounded-xl border border-slate-800 p-4">
+                                <canvas id="detailChart"></canvas>
+                                <div v-if="chartLoading" class="absolute inset-0 flex items-center justify-center bg-slate-900/80 z-10 backdrop-blur-sm transition-all">
+                                    <div class="flex flex-col items-center gap-3">
+                                        <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+                                        <span class="text-xs text-blue-400">加载数据中...</span>
+                                    </div>
                                 </div>
                             </div>
                         </div>
                     </div>
                 </div>
-            </div>
-        </Transition>
+            </Transition>
+        </div>
     </div>
 
     <script>
-        const { createApp, ref, onMounted, onUnmounted, computed, watch } = Vue;
+        const { createApp, ref, onMounted, onUnmounted, computed, watch, nextTick } = Vue;
         
         Chart.defaults.color = '#64748b';
         Chart.defaults.borderColor = '#334155';
@@ -269,6 +308,11 @@
 
         createApp({
             setup() {
+                const token = ref(localStorage.getItem('wg_token') || '');
+                const loginPassword = ref('');
+                const loginError = ref('');
+                const isLoggingIn = ref(false);
+
                 const peers = ref([]);
                 const meta = ref({interface: '...', port: '...'});
                 const sysInfo = ref({cpu_percent:0, mem_percent:0, cpu_temp:0, uptime:0});
@@ -282,6 +326,55 @@
                 const searchQuery = ref('');
                 
                 let chartInst = null, mainChartInst = null, pollTimer = null;
+
+                // 配置 Axios 拦截器
+                axios.interceptors.request.use(config => {
+                    if (token.value) {
+                        config.headers.Authorization = `Bearer ${token.value}`;
+                    }
+                    return config;
+                });
+
+                axios.interceptors.response.use(response => response, error => {
+                    if (error.response && error.response.status === 401) {
+                        logout();
+                    }
+                    return Promise.reject(error);
+                });
+
+                const handleLogin = async () => {
+                    isLoggingIn.value = true;
+                    loginError.value = '';
+                    try {
+                        const res = await axios.post('/api/login', { password: loginPassword.value });
+                        token.value = res.data.token;
+                        localStorage.setItem('wg_token', res.data.token);
+                        // 登录成功后，等待 DOM 更新再初始化图表和数据
+                        nextTick(() => {
+                            initDashboard();
+                        });
+                    } catch (e) {
+                        loginError.value = e.response?.data?.error || '登录失败，请检查密码';
+                    } finally {
+                        isLoggingIn.value = false;
+                    }
+                };
+
+                const logout = () => {
+                    token.value = '';
+                    localStorage.removeItem('wg_token');
+                    loginPassword.value = '';
+                    clearInterval(pollTimer);
+                };
+
+                const initDashboard = () => {
+                    fetchData();
+                    fetchMainChart();
+                    // 只有在没有定时器时才启动，防止重复
+                    if (!pollTimer) {
+                        pollTimer = setInterval(() => { fetchData(); fetchMainChart(); }, 3000);
+                    }
+                };
 
                 const fmtBytes = (b) => {
                     if (b===0) return '0 B';
@@ -317,6 +410,7 @@
                 });
 
                 const fetchData = async () => {
+                    if (!token.value) return;
                     try {
                         const [pRes, sRes] = await Promise.all([
                             axios.get('/api/peers'),
@@ -345,6 +439,7 @@
                 }
 
                 const fetchMainChart = async () => {
+                    if (!token.value) return;
                     try {
                         const res = await axios.get('/api/chart/traffic?period=' + mainChartPeriod.value);
                         renderMainChart(res.data.labels, res.data.rx, res.data.tx);
@@ -356,7 +451,6 @@
                     if (!ctxEl) return;
                     const ctx = ctxEl.getContext('2d');
 
-                    // [关键] 后端返回 Unix 秒，转换为毫秒
                     const timeLabels = labels.map(t => t * 1000);
 
                     if (mainChartInst) {
@@ -430,6 +524,7 @@
                 };
 
                 const fetchHistory = async (pk) => {
+                    if (!token.value) return;
                     chartLoading.value = true;
                     try {
                         const res = await axios.get('/api/history/'+pk+'?period='+historyPeriod.value);
@@ -443,7 +538,6 @@
                     if (!ctxEl) return;
                     const ctx = ctxEl.getContext('2d');
 
-                    // [关键] 时间戳转换
                     const timeLabels = labels.map(t => t * 1000);
 
                     if (chartInst) {
@@ -508,26 +602,35 @@
                 };
 
                 const handleVisibility = () => {
+                    if (!token.value) return;
                     if (document.hidden) {
                         clearInterval(pollTimer);
+                        pollTimer = null;
                     } else {
                         fetchData(); fetchMainChart();
-                        pollTimer = setInterval(() => { fetchData(); fetchMainChart(); }, 3000);
+                        if (!pollTimer) {
+                            pollTimer = setInterval(() => { fetchData(); fetchMainChart(); }, 3000);
+                        }
                     }
                 };
 
                 onMounted(() => {
-                    fetchData();
-                    fetchMainChart();
-                    pollTimer = setInterval(() => { fetchData(); fetchMainChart(); }, 3000);
+                    if (token.value) {
+                        initDashboard();
+                    }
                     document.addEventListener('visibilitychange', handleVisibility);
                 });
+
                 onUnmounted(() => {
                     clearInterval(pollTimer);
                     document.removeEventListener('visibilitychange', handleVisibility);
                 });
 
                 return {
+                    // Auth state
+                    token, loginPassword, loginError, isLoggingIn, handleLogin, logout,
+
+                    // Original state
                     peers, meta, sysInfo, editing, tempAlias, loading, modalPeer, historyPeriod, mainChartPeriod, chartLoading, searchQuery, filteredPeers,
                     totalRxRate, totalTxRate, onlineCount,
                     fmtBytes, fmtRate, formatUptimeShort, 
