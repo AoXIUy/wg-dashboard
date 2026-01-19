@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/golang-jwt/jwt/v5" // [新增] JWT 依赖
 	"github.com/shirou/gopsutil/v3/cpu"
 	"github.com/shirou/gopsutil/v3/host"
 	"github.com/shirou/gopsutil/v3/mem"
@@ -44,14 +45,17 @@ const (
 	ShutdownTimeout       = 30 * time.Second
 	BitsPerByte           = 8.0
 	MegabitsPerSecond     = 1000000.0
+	TokenExpireDuration   = 24 * time.Hour // [新增] Token 过期时间
 )
 
 // ================= 配置区域 =================
 var (
-	WGInterface string
-	ServerPort  string
-	DBPath      string
-	Retention   int
+	WGInterface   string
+	ServerPort    string
+	DBPath        string
+	Retention     int
+	AdminPassword string // [新增] 管理员密码
+	JWTSecret     string // [新增] JWT 密钥
 )
 
 // ================= 数据结构 =================
@@ -104,6 +108,17 @@ type cacheEntry struct {
 	timestamp time.Time
 }
 
+// [新增] 登录请求结构
+type LoginRequest struct {
+	Password string `json:"password" binding:"required"`
+}
+
+// [新增] JWT Claims 结构
+type JwtClaims struct {
+	User string `json:"user"`
+	jwt.RegisteredClaims
+}
+
 // ================= 全局变量 =================
 var (
 	db               *sql.DB
@@ -119,6 +134,9 @@ func main() {
 	flag.StringVar(&ServerPort, "port", ":8080", "Web 监听端口")
 	flag.StringVar(&DBPath, "db", "./wg_stats.db", "数据库路径")
 	flag.IntVar(&Retention, "days", 30, "数据保留天数")
+	// [新增] 密码和密钥配置
+	flag.StringVar(&AdminPassword, "password", "admin123", "仪表盘访问密码")
+	flag.StringVar(&JWTSecret, "secret", "change_this_secret_in_prod", "JWT 签名密钥")
 	flag.Parse()
 
 	if err := initDB(); err != nil {
@@ -137,7 +155,7 @@ func main() {
 	writeChan := make(chan []ProcessedLog, 10)
 
 	var wg sync.WaitGroup
-	
+
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -173,6 +191,7 @@ func main() {
 	r.Use(gin.Recovery())
 	// r.Use(requestLogger()) // 可选：启用请求日志
 
+	// 静态页面 (公开)
 	r.GET("/", func(c *gin.Context) {
 		c.Header("Content-Type", "text/html; charset=utf-8")
 		c.String(http.StatusOK, indexHtml)
@@ -180,12 +199,37 @@ func main() {
 
 	api := r.Group("/api")
 	{
-		api.GET("/peers", getPeers)
-		api.GET("/history/:publickey", getPeerHistory)
-		api.GET("/stats", getStats)
-		api.POST("/alias", setAlias)
-		api.GET("/chart/traffic", getTrafficChartData)
-		api.GET("/system", getSystemStatus)
+		// [新增] 登录接口 (公开)
+		api.POST("/login", loginHandler)
+		
+		// [新增] 检查登录状态 (公开，用于前端判断 Token 有效性)
+		api.GET("/check_auth", func(c *gin.Context) {
+			tokenString := extractToken(c)
+			if tokenString == "" {
+				c.JSON(http.StatusUnauthorized, gin.H{"status": "invalid"})
+				return
+			}
+			token, err := jwt.ParseWithClaims(tokenString, &JwtClaims{}, func(token *jwt.Token) (interface{}, error) {
+				return []byte(JWTSecret), nil
+			})
+			if err != nil || !token.Valid {
+				c.JSON(http.StatusUnauthorized, gin.H{"status": "invalid"})
+				return
+			}
+			c.JSON(http.StatusOK, gin.H{"status": "ok"})
+		})
+
+		// 受保护的路由组
+		authorized := api.Group("/")
+		authorized.Use(authMiddleware()) 
+		{
+			authorized.GET("/peers", getPeers)
+			authorized.GET("/history/:publickey", getPeerHistory)
+			authorized.GET("/stats", getStats)
+			authorized.POST("/alias", setAlias)
+			authorized.GET("/chart/traffic", getTrafficChartData)
+			authorized.GET("/system", getSystemStatus)
+		}
 	}
 
 	srv := &http.Server{
@@ -198,8 +242,9 @@ func main() {
 		logger.Printf("WireGuard Monitor 启动成功")
 		logger.Printf("接口: %s | 端口: %s", WGInterface, ServerPort)
 		logger.Printf("数据库: %s | 保留天数: %d", DBPath, Retention)
+		logger.Printf("安全: 已启用 JWT 鉴权")
 		logger.Printf("==============================================")
-		
+
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Fatalf("HTTP 服务器启动失败: %v", err)
 		}
@@ -213,7 +258,7 @@ func main() {
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), ShutdownTimeout)
 	defer shutdownCancel()
-	
+
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		logger.Printf("HTTP 服务器关闭失败: %v", err)
 	}
@@ -234,6 +279,81 @@ func main() {
 	}
 
 	logger.Println("程序已退出")
+}
+
+// ================= 安全鉴权逻辑 =================
+
+// [新增] 提取 Token 辅助函数
+func extractToken(c *gin.Context) string {
+	bearerToken := c.GetHeader("Authorization")
+	if len(bearerToken) > 7 && strings.ToUpper(bearerToken[0:7]) == "BEARER " {
+		return bearerToken[7:]
+	}
+	return ""
+}
+
+// [新增] JWT 中间件
+func authMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		tokenString := extractToken(c)
+		if tokenString == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "未提供认证令牌"})
+			c.Abort()
+			return
+		}
+
+		token, err := jwt.ParseWithClaims(tokenString, &JwtClaims{}, func(token *jwt.Token) (interface{}, error) {
+			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+				return nil, errors.New("无效的签名方法")
+			}
+			return []byte(JWTSecret), nil
+		})
+
+		if err != nil || !token.Valid {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "无效或过期的令牌"})
+			c.Abort()
+			return
+		}
+
+		c.Next()
+	}
+}
+
+// [新增] 登录处理函数
+func loginHandler(c *gin.Context) {
+	var req LoginRequest
+	if err := c.BindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的请求格式"})
+		return
+	}
+
+	if req.Password != AdminPassword {
+		// 简单的防爆破延迟
+		time.Sleep(500 * time.Millisecond)
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "密码错误"})
+		return
+	}
+
+	expirationTime := time.Now().Add(TokenExpireDuration)
+	claims := &JwtClaims{
+		User: "admin",
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(expirationTime),
+			Issuer:    "wg-monitor",
+		},
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	tokenString, err := token.SignedString([]byte(JWTSecret))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "生成令牌失败"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"token":     tokenString,
+		"expires_at": expirationTime.Unix(),
+	})
 }
 
 // ================= 数据库层 =================
@@ -284,7 +404,7 @@ func initDB() error {
 		alias TEXT NOT NULL
 	);
 	`
-	
+
 	if _, err := db.Exec(schema); err != nil {
 		return err
 	}
@@ -300,7 +420,7 @@ func startCollector(ctx context.Context, out chan<- RawSnapshot) {
 
 	var client *wgctrl.Client
 	var err error
-	
+
 	reconnect := func() error {
 		if client != nil {
 			client.Close()
@@ -374,7 +494,7 @@ func startProcessor(ctx context.Context, in <-chan RawSnapshot, out chan<- []Pro
 
 		batch := make([]ProcessedLog, len(buffer))
 		copy(batch, buffer)
-		
+
 		select {
 		case out <- batch:
 			buffer = buffer[:0]
@@ -402,7 +522,7 @@ func startProcessor(ctx context.Context, in <-chan RawSnapshot, out chan<- []Pro
 			for _, p := range snap.Peers {
 				pk := p.PublicKey.String()
 				state, exists := stateMap[pk]
-				
+
 				if !exists {
 					state = &PeerState{
 						LastRx:   p.ReceiveBytes,
@@ -439,7 +559,7 @@ func startProcessor(ctx context.Context, in <-chan RawSnapshot, out chan<- []Pro
 					TxRate:    txRate,
 					IsOnline:  isOnline,
 				}
-				
+
 				buffer = append(buffer, logEntry)
 				latestPeersCache.Store(pk, cacheEntry{
 					data:      logEntry,
@@ -519,7 +639,7 @@ func startCleaner(ctx context.Context) {
 	if Retention <= 0 {
 		return
 	}
-c
+
 	logger.Printf("数据清理器已启动 (保留 %d 天)", Retention)
 	defer logger.Println("数据清理器已停止")
 
@@ -751,7 +871,7 @@ func getPeers(c *gin.Context) {
 	var peers []PeerData
 	for _, p := range device.Peers {
 		pk := p.PublicKey.String()
-		
+
 		var ips []string
 		for _, ip := range p.AllowedIPs {
 			ips = append(ips, ip.String())
