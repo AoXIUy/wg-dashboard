@@ -6,19 +6,21 @@ import (
 	_ "embed"
 	"errors"
 	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/golang-jwt/jwt/v5" // [新增] JWT 依赖
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/shirou/gopsutil/v3/cpu"
 	"github.com/shirou/gopsutil/v3/host"
 	"github.com/shirou/gopsutil/v3/mem"
@@ -32,20 +34,20 @@ var indexHtml string
 
 // ================= 常量定义 =================
 const (
-	CollectInterval       = 2 * time.Second
-	WriteInterval         = 6 * time.Second
-	BatchSize             = 10
-	MaxAliasLength        = 100
-	MaxPublicKeyLength    = 200
-	OnlineThreshold       = 3 * time.Minute
-	DBMaxOpenConns        = 25
-	DBMaxIdleConns        = 5
-	DBConnMaxLifetime     = 5 * time.Minute
-	CacheTTL              = 10 * time.Minute
-	ShutdownTimeout       = 30 * time.Second
-	BitsPerByte           = 8.0
-	MegabitsPerSecond     = 1000000.0
-	TokenExpireDuration   = 24 * time.Hour // [新增] Token 过期时间
+	CollectInterval     = 2 * time.Second
+	WriteInterval       = 6 * time.Second
+	BatchSize           = 10
+	MaxAliasLength      = 100
+	MaxPublicKeyLength  = 200
+	OnlineThreshold     = 3 * time.Minute
+	DBMaxOpenConns      = 25
+	DBMaxIdleConns      = 5
+	DBConnMaxLifetime   = 5 * time.Minute
+	CacheTTL            = 10 * time.Minute
+	ShutdownTimeout     = 30 * time.Second
+	BitsPerByte         = 8.0
+	MegabitsPerSecond   = 1000000.0
+	TokenExpireDuration = 24 * time.Hour
 )
 
 // ================= 配置区域 =================
@@ -54,8 +56,8 @@ var (
 	ServerPort    string
 	DBPath        string
 	Retention     int
-	AdminPassword string // [新增] 管理员密码
-	JWTSecret     string // [新增] JWT 密钥
+	AdminPassword string
+	JWTSecret     string
 )
 
 // ================= 数据结构 =================
@@ -108,15 +110,38 @@ type cacheEntry struct {
 	timestamp time.Time
 }
 
-// [新增] 登录请求结构
+// --- 鉴权结构 ---
 type LoginRequest struct {
 	Password string `json:"password" binding:"required"`
 }
 
-// [新增] JWT Claims 结构
 type JwtClaims struct {
 	User string `json:"user"`
 	jwt.RegisteredClaims
+}
+
+// --- 分析结构 ---
+type PeerAnalysis struct {
+	PublicKey    string  `json:"public_key"`
+	Alias        string  `json:"alias"`
+	TotalRx      int64   `json:"total_rx"`       // 估算的总下载字节
+	TotalTx      int64   `json:"total_tx"`       // 估算的总上传字节
+	Uptime       float64 `json:"uptime_percent"` // 在线率 0-100
+	HealthScore  int     `json:"health_score"`   // 健康分 0-100
+	LastSeenTime int64   `json:"last_seen_time"`
+}
+
+type ActivityPoint struct {
+	Hour  int     `json:"hour"`   // 0-23
+	RxSum float64 `json:"rx_sum"` // 聚合速率指标
+	TxSum float64 `json:"tx_sum"`
+}
+
+type AnalysisReport struct {
+	Period        string          `json:"period"`
+	GeneratedAt   int64           `json:"generated_at"`
+	Peers         []PeerAnalysis  `json:"peers"`
+	HourlyProfile []ActivityPoint `json:"hourly_profile"`
 }
 
 // ================= 全局变量 =================
@@ -134,7 +159,6 @@ func main() {
 	flag.StringVar(&ServerPort, "port", ":8080", "Web 监听端口")
 	flag.StringVar(&DBPath, "db", "./wg_stats.db", "数据库路径")
 	flag.IntVar(&Retention, "days", 30, "数据保留天数")
-	// [新增] 密码和密钥配置
 	flag.StringVar(&AdminPassword, "password", "admin123", "仪表盘访问密码")
 	flag.StringVar(&JWTSecret, "secret", "change_this_secret_in_prod", "JWT 签名密钥")
 	flag.Parse()
@@ -156,6 +180,7 @@ func main() {
 
 	var wg sync.WaitGroup
 
+	// 启动完整 Pipeline 组件
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -189,7 +214,6 @@ func main() {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Recovery())
-	// r.Use(requestLogger()) // 可选：启用请求日志
 
 	// 静态页面 (公开)
 	r.GET("/", func(c *gin.Context) {
@@ -199,10 +223,8 @@ func main() {
 
 	api := r.Group("/api")
 	{
-		// [新增] 登录接口 (公开)
+		// 公开接口
 		api.POST("/login", loginHandler)
-		
-		// [新增] 检查登录状态 (公开，用于前端判断 Token 有效性)
 		api.GET("/check_auth", func(c *gin.Context) {
 			tokenString := extractToken(c)
 			if tokenString == "" {
@@ -219,9 +241,9 @@ func main() {
 			c.JSON(http.StatusOK, gin.H{"status": "ok"})
 		})
 
-		// 受保护的路由组
+		// 受保护接口
 		authorized := api.Group("/")
-		authorized.Use(authMiddleware()) 
+		authorized.Use(authMiddleware())
 		{
 			authorized.GET("/peers", getPeers)
 			authorized.GET("/history/:publickey", getPeerHistory)
@@ -229,6 +251,23 @@ func main() {
 			authorized.POST("/alias", setAlias)
 			authorized.GET("/chart/traffic", getTrafficChartData)
 			authorized.GET("/system", getSystemStatus)
+			
+			// 深度分析接口
+			authorized.GET("/analysis", func(c *gin.Context) {
+				daysStr := c.DefaultQuery("days", "7")
+				days := 7
+				if d, err := strconv.Atoi(daysStr); err == nil && d > 0 {
+					days = d
+				}
+
+				report, err := getAnalysisData(days)
+				if err != nil {
+					logger.Printf("分析生成失败: %v", err)
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "分析生成失败"})
+					return
+				}
+				c.JSON(http.StatusOK, report)
+			})
 		}
 	}
 
@@ -255,14 +294,12 @@ func main() {
 	<-quit
 
 	logger.Println("开始优雅关闭...")
-
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), ShutdownTimeout)
 	defer shutdownCancel()
 
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		logger.Printf("HTTP 服务器关闭失败: %v", err)
 	}
-
 	cancel()
 
 	done := make(chan struct{})
@@ -277,13 +314,11 @@ func main() {
 	case <-time.After(ShutdownTimeout):
 		logger.Println("后台任务关闭超时")
 	}
-
 	logger.Println("程序已退出")
 }
 
 // ================= 安全鉴权逻辑 =================
 
-// [新增] 提取 Token 辅助函数
 func extractToken(c *gin.Context) string {
 	bearerToken := c.GetHeader("Authorization")
 	if len(bearerToken) > 7 && strings.ToUpper(bearerToken[0:7]) == "BEARER " {
@@ -292,7 +327,6 @@ func extractToken(c *gin.Context) string {
 	return ""
 }
 
-// [新增] JWT 中间件
 func authMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		tokenString := extractToken(c)
@@ -319,7 +353,6 @@ func authMiddleware() gin.HandlerFunc {
 	}
 }
 
-// [新增] 登录处理函数
 func loginHandler(c *gin.Context) {
 	var req LoginRequest
 	if err := c.BindJSON(&req); err != nil {
@@ -328,7 +361,6 @@ func loginHandler(c *gin.Context) {
 	}
 
 	if req.Password != AdminPassword {
-		// 简单的防爆破延迟
 		time.Sleep(500 * time.Millisecond)
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "密码错误"})
 		return
@@ -351,26 +383,22 @@ func loginHandler(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"token":     tokenString,
+		"token":      tokenString,
 		"expires_at": expirationTime.Unix(),
 	})
 }
 
-// ================= 数据库层 =================
+// ================= 数据库与分析逻辑 =================
+
 func initDB() error {
 	var err error
 	db, err = sql.Open("sqlite", DBPath)
 	if err != nil {
 		return err
 	}
-
 	db.SetMaxOpenConns(DBMaxOpenConns)
 	db.SetMaxIdleConns(DBMaxIdleConns)
 	db.SetConnMaxLifetime(DBConnMaxLifetime)
-
-	if err := db.Ping(); err != nil {
-		return err
-	}
 
 	pragmas := []string{
 		"PRAGMA journal_mode = WAL",
@@ -378,11 +406,8 @@ func initDB() error {
 		"PRAGMA cache_size = -64000",
 		"PRAGMA temp_store = MEMORY",
 	}
-
 	for _, pragma := range pragmas {
-		if _, err := db.Exec(pragma); err != nil {
-			logger.Printf("警告: 执行 %s 失败: %v", pragma, err)
-		}
+		db.Exec(pragma)
 	}
 
 	schema := `
@@ -404,23 +429,141 @@ func initDB() error {
 		alias TEXT NOT NULL
 	);
 	`
-
-	if _, err := db.Exec(schema); err != nil {
-		return err
-	}
-
-	logger.Println("数据库初始化成功")
-	return nil
+	_, err = db.Exec(schema)
+	return err
 }
 
-// ================= 核心 Pipeline =================
+func getAnalysisData(days int) (*AnalysisReport, error) {
+	startTime := time.Now().AddDate(0, 0, -days).Unix()
+	report := &AnalysisReport{
+		Period:      fmt.Sprintf("Last %d Days", days),
+		GeneratedAt: time.Now().Unix(),
+	}
+
+	aliasMap := make(map[string]string)
+	aRows, err := db.Query("SELECT public_key, alias FROM peer_aliases")
+	if err == nil {
+		defer aRows.Close()
+		for aRows.Next() {
+			var pk, a string
+			aRows.Scan(&pk, &a)
+			aliasMap[pk] = a
+		}
+	}
+
+	// 聚合 Peer 统计
+	queryPeers := `
+		SELECT 
+			peer_public_key,
+			COUNT(*) as samples,
+			TOTAL(is_online) as online_samples,
+			TOTAL(rx_rate) as sum_rx_rate,
+			TOTAL(tx_rate) as sum_tx_rate,
+			MAX(timestamp) as last_seen
+		FROM traffic_history
+		WHERE timestamp > ?
+		GROUP BY peer_public_key
+	`
+	rows, err := db.Query(queryPeers, startTime)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var pk string
+		var samples, onlineSamples int64
+		var sumRx, sumTx float64
+		var lastSeen int64
+
+		if err := rows.Scan(&pk, &samples, &onlineSamples, &sumRx, &sumTx, &lastSeen); err != nil {
+			continue
+		}
+
+		if samples == 0 {
+			samples = 1
+		}
+
+		// 估算流量 (基于 6秒采样周期)
+		const secondsPerSample = 6.0
+		estRx := int64(sumRx * secondsPerSample * 1000000 / 8)
+		estTx := int64(sumTx * secondsPerSample * 1000000 / 8)
+
+		uptime := float64(onlineSamples) / float64(samples) * 100.0
+
+		score := int(uptime)
+		if lastSeen < time.Now().Add(-24*time.Hour).Unix() {
+			score -= 20
+		}
+		if score < 0 {
+			score = 0
+		}
+
+		report.Peers = append(report.Peers, PeerAnalysis{
+			PublicKey:    pk,
+			Alias:        aliasMap[pk],
+			TotalRx:      estRx,
+			TotalTx:      estTx,
+			Uptime:       uptime,
+			HealthScore:  score,
+			LastSeenTime: lastSeen,
+		})
+	}
+
+	sort.Slice(report.Peers, func(i, j int) bool {
+		return (report.Peers[i].TotalRx + report.Peers[i].TotalTx) > (report.Peers[j].TotalRx + report.Peers[j].TotalTx)
+	})
+
+	// 聚合 24h 画像
+	queryTime := `
+		SELECT timestamp, SUM(rx_rate + tx_rate)
+		FROM traffic_history
+		WHERE timestamp > ?
+		GROUP BY timestamp / 3600
+	`
+	tRows, err := db.Query(queryTime, startTime)
+	if err != nil {
+		return nil, err
+	}
+	defer tRows.Close()
+
+	hourlyMap := make(map[int]float64)
+	hourlyCount := make(map[int]int)
+
+	for tRows.Next() {
+		var ts int64
+		var rateSum float64
+		tRows.Scan(&ts, &rateSum)
+
+		t := time.Unix(ts, 0)
+		h := t.Hour()
+		hourlyMap[h] += rateSum
+		hourlyCount[h]++
+	}
+
+	for i := 0; i < 24; i++ {
+		avgRate := 0.0
+		if c := hourlyCount[i]; c > 0 {
+			avgRate = hourlyMap[i] / float64(c)
+		}
+		report.HourlyProfile = append(report.HourlyProfile, ActivityPoint{
+			Hour:  i,
+			RxSum: avgRate,
+		})
+	}
+
+	return report, nil
+}
+
+// ================= Pipeline 核心 (完整版) =================
+
 func startCollector(ctx context.Context, out chan<- RawSnapshot) {
 	logger.Println("采集器已启动")
 	defer logger.Println("采集器已停止")
 
 	var client *wgctrl.Client
 	var err error
-
+	
 	reconnect := func() error {
 		if client != nil {
 			client.Close()
@@ -472,7 +615,7 @@ func startCollector(ctx context.Context, out chan<- RawSnapshot) {
 				close(out)
 				return
 			default:
-				logger.Println("警告: 采集通道已满，丢弃数据")
+				// 通道满时丢弃数据，防止阻塞
 			}
 		}
 	}
@@ -494,7 +637,7 @@ func startProcessor(ctx context.Context, in <-chan RawSnapshot, out chan<- []Pro
 
 		batch := make([]ProcessedLog, len(buffer))
 		copy(batch, buffer)
-
+		
 		select {
 		case out <- batch:
 			buffer = buffer[:0]
@@ -522,7 +665,7 @@ func startProcessor(ctx context.Context, in <-chan RawSnapshot, out chan<- []Pro
 			for _, p := range snap.Peers {
 				pk := p.PublicKey.String()
 				state, exists := stateMap[pk]
-
+				
 				if !exists {
 					state = &PeerState{
 						LastRx:   p.ReceiveBytes,
@@ -559,7 +702,7 @@ func startProcessor(ctx context.Context, in <-chan RawSnapshot, out chan<- []Pro
 					TxRate:    txRate,
 					IsOnline:  isOnline,
 				}
-
+				
 				buffer = append(buffer, logEntry)
 				latestPeersCache.Store(pk, cacheEntry{
 					data:      logEntry,
@@ -695,7 +838,7 @@ func startCacheCleaner(ctx context.Context) {
 	}
 }
 
-// ================= 数据查询逻辑 =================
+// ================= 辅助 API Handles & Queries =================
 
 func getRangeParams(period string) (int64, int64) {
 	now := time.Now().Unix()
@@ -754,10 +897,6 @@ func resampleData(rows *sql.Rows, step int64) ([]int64, []float64, []float64, er
 		buckets[slot].count++
 	}
 
-	if err := rows.Err(); err != nil {
-		return nil, nil, nil, err
-	}
-
 	var timestamps []int64
 	for ts := range buckets {
 		timestamps = append(timestamps, ts)
@@ -775,46 +914,18 @@ func resampleData(rows *sql.Rows, step int64) ([]int64, []float64, []float64, er
 }
 
 func validatePublicKey(pk string) error {
-	if len(pk) == 0 {
-		return errors.New("公钥不能为空")
-	}
-	if len(pk) > MaxPublicKeyLength {
-		return errors.New("公钥长度超出限制")
-	}
-	if !publicKeyRegex.MatchString(pk) {
-		return errors.New("公钥格式无效")
-	}
+	if len(pk) == 0 { return errors.New("公钥不能为空") }
+	if len(pk) > MaxPublicKeyLength { return errors.New("公钥长度超出限制") }
+	if !publicKeyRegex.MatchString(pk) { return errors.New("公钥格式无效") }
 	return nil
 }
 
 func validateAlias(alias string) error {
-	if len(alias) == 0 {
-		return errors.New("别名不能为空")
-	}
-	if len(alias) > MaxAliasLength {
-		return errors.New("别名长度超出限制")
-	}
-	if strings.ContainsAny(alias, "<>\"';&|") {
-		return errors.New("别名包含非法字符")
-	}
+	if len(alias) == 0 { return errors.New("别名不能为空") }
+	if len(alias) > MaxAliasLength { return errors.New("别名长度超出限制") }
+	if strings.ContainsAny(alias, "<>\"';&|") { return errors.New("别名包含非法字符") }
 	return nil
 }
-
-func requestLogger() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		start := time.Now()
-		path := c.Request.URL.Path
-		raw := c.Request.URL.RawQuery
-		c.Next()
-		latency := time.Since(start)
-		if raw != "" {
-			path = path + "?" + raw
-		}
-		logger.Printf("[HTTP] %s %s | %d | %v", c.Request.Method, path, c.Writer.Status(), latency)
-	}
-}
-
-// ================= API Handlers =================
 
 func getSystemStatus(c *gin.Context) {
 	var sys SystemInfo
@@ -871,7 +982,7 @@ func getPeers(c *gin.Context) {
 	var peers []PeerData
 	for _, p := range device.Peers {
 		pk := p.PublicKey.String()
-
+		
 		var ips []string
 		for _, ip := range p.AllowedIPs {
 			ips = append(ips, ip.String())
