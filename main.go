@@ -840,32 +840,27 @@ func startCacheCleaner(ctx context.Context) {
 
 // ================= 辅助 API Handles & Queries =================
 
+// 修改 main.go 中的 getRangeParams 函数
 func getRangeParams(period string) (int64, int64) {
 	now := time.Now().Unix()
 	var duration, step int64
 
 	switch period {
 	case "realtime":
-		duration = 1800 // 30 mins
-		step = 2
-	case "30m":
-		duration = 1800
-		step = 60
+		duration = 1800 // 30 分钟窗口
+		step = 10       // 优化点：从 2 改为 10，稀释数据密度
 	case "1h":
 		duration = 3600
-		step = 60
-	case "12h":
-		duration = 43200
-		step = 300
+		step = 30       // 优化点：每 30 秒一个点
 	case "24h":
 		duration = 86400
-		step = 1800
+		step = 600      // 优化点：每 10 分钟一个点
 	case "7d":
 		duration = 604800
-		step = 14400
+		step = 3600     // 优化点：每 1 小时一个点
 	default:
 		duration = 1800
-		step = 2
+		step = 10
 	}
 	return now - duration, step
 }
