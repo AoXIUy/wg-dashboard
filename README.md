@@ -21,7 +21,7 @@
 
 ## 📸 截图预览
 
-*(在此处上传您的项目截图，例如仪表盘首页、详情页等，建议文件名: `docs/screenshot_main.png`)*
+![Alt文本](docs/screenshot_main.png)
 
 ## 🛠️ 安装与部署
 
