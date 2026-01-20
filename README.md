@@ -192,8 +192,8 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o wg-monitor -ldflags="-s -w" ma
 5. 开启一个 Pull Request
 
 ## 📄 许可证
-
-
+GPLv3
+![License](https://img.shields.io/badge/License-GPLv3-blue.svg)
 ---
 
 *Made with ❤️ by [Aoxiuy]*
