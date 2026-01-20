@@ -1,0 +1,74 @@
+name: Build and Release
+on:
+  push:
+    branches: [ "main" ]
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [ "main" ]
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.21'
+          
+      - name: Test
+        run: go test -v ./...
+
+  release:
+    needs: test 
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # 定义编译目标平台
+        include:
+          - goos: linux
+            goarch: amd64
+            output_name: wg-monitor-linux-amd64
+          - goos: linux
+            goarch: arm64
+            output_name: wg-monitor-linux-arm64
+          - goos: windows
+            goarch: amd64
+            output_name: wg-monitor-windows-amd64.exe
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.21'
+
+      - name: Build Binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0 # 关键：关闭 CGO 以支持静态链接和跨平台 (因为你使用了 modernc.org/sqlite)
+        run: |
+          go build -ldflags="-s -w" -o ${{ matrix.output_name }} main.go
+
+      - name: Release
+        uses: softprops/action-gh-release@v1
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: ${{ matrix.output_name }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          
+      - name: Upload Artifact
+        if: "!startsWith(github.ref, 'refs/tags/')"
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.output_name }}
+          path: ${{ matrix.output_name }}
+          retention-days: 5
