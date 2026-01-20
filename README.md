@@ -193,8 +193,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o wg-monitor -ldflags="-s -w" ma
 
 ## 📄 许可证
 
-本项目基于 MIT 许可证开源 - 详见 [LICENSE](https://www.google.com/search?q=LICENSE) 文件。
 
 ---
 
-*Made with ❤️ by [Your Name]*
+*Made with ❤️ by [Aoxiuy]*
