@@ -1,7 +1,7 @@
 # ⚡ WireGuard Pro Dashboard
 
 [![Go Version](https://img.shields.io/github/go-mod/go-version/yourusername/wg-dashboard?style=flat-square)](https://golang.org/doc/devel/release.html)
-[![License](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](https://opensource.org/licenses/MIT)
+![License](https://img.shields.io/badge/License-GPLv3-blue.svg)
 [![Vue 3](https://img.shields.io/badge/Frontend-Vue.js%203-4FC08D?style=flat-square&logo=vue.js)](https://vuejs.org/)
 [![Tailwind](https://img.shields.io/badge/Style-Tailwind%20CSS-38B2AC?style=flat-square&logo=tailwind-css)](https://tailwindcss.com/)
 
