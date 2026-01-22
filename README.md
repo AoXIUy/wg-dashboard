@@ -12,7 +12,10 @@
 ---
 
 ![Dashboard Preview](docs/screenshot_main.png)
-
+![Dashboard Preview](docs/user.png)
+![Dashboard Preview](docs/tj.png)
+![Dashboard Preview](docs/ADD.png)
+![Dashboard Preview](docs/ADDQR.png) 
 
 </div>
 
