@@ -72,7 +72,7 @@
 
 ```bash
 # 1. 克隆代码
-git clone [https://github.com/yourusername/wg-dashboard.git](https://github.com/yourusername/wg-dashboard.git)
+git clone https://github.com/AoXIUy/wg-dashboard.git
 cd wg-dashboard
 
 # 2. 编译 (生成的二进制文件包含所有静态资源)
