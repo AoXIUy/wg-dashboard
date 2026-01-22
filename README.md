@@ -146,6 +146,4 @@ sudo ./wg-dashboard -port :80 -iface wg0 -password "MySecurePass!" -days 90
 
 基于 ![License](https://img.shields.io/badge/License-GPLv3-blue.svg) 开源。
 
-```
 
-```
