@@ -1,199 +1,151 @@
-# 🛡️ WireGuard Monitor & Dashboard
+# ⚡ WireGuard Pro Dashboard
 
-一个轻量级、高性能的 WireGuard 流量监控与管理仪表盘。单二进制文件部署，集成了实时监控、历史流量回溯、设备管理与深度网络分析功能。
+[![Go Version](https://img.shields.io/github/go-mod/go-version/yourusername/wg-dashboard?style=flat-square)](https://golang.org/doc/devel/release.html)
+![License](https://img.shields.io/badge/License-GPLv3-blue.svg)
+[![Vue 3](https://img.shields.io/badge/Frontend-Vue.js%203-4FC08D?style=flat-square&logo=vue.js)](https://vuejs.org/)
+[![Tailwind](https://img.shields.io/badge/Style-Tailwind%20CSS-38B2AC?style=flat-square&logo=tailwind-css)](https://tailwindcss.com/)
 
-> **注意**: 本项目包含内嵌的前端 UI (`index.html`) 和高性能 Go 后端，无需复杂的环境依赖即可运行。
+**极速 · 实时 · 现代化的 WireGuard 管理面板**
 
-## ✨ 主要功能
-
-* **📊 实时监控**: 秒级更新 WireGuard 接口的上传/下载速率，低延迟数据管道。
-* **💾 历史回溯**: 基于 SQLite 存储历史流量数据，支持查看 1小时/24小时/7天 的流量趋势图。
-* **📱 设备管理**:
-* 自动发现 WireGuard 配置文件中的 Peer。
-* 支持为 Peer 设置**别名 (Alias)**，方便识别。
-* 在线/离线状态实时检测。
-
-
-* **🩺 深度分析**: 提供 Peer 健康度评分、在线率统计、总流量排名以及 24小时活跃度热力画像。
-* **🖥️ 系统概览**: 实时监控服务器 CPU、内存使用率、温度及负载情况。
-* **🔐 安全认证**: 内置 JWT 身份验证机制，保护仪表盘访问安全。
-* **🚀 零依赖**: 基于 `modernc.org/sqlite` (纯 Go 实现)，无需 CGO，跨平台部署极其简单。
-
-## 📸 截图预览
-
-![Alt文本](docs/screenshot_main.png)
-
-## 🛠️ 安装与部署
-
-### 前置要求
-
-* Linux 操作系统 (需要访问 WireGuard 接口)
-* 已安装并配置好的 WireGuard 接口 (如 `wg0`)
-* Root 权限 (读取 wg 接口信息需要)
-
-### 方法一：直接运行 (二进制)
-
-1. **下载编译好的二进制文件** (参见 [Releases](https://www.google.com/search?q=%E4%BD%A0%E7%9A%84github%E9%93%BE%E6%8E%A5/releases) 页面) 或自行编译。
-2. **运行**:
-```bash
-# 赋予执行权限
-chmod +x wg-monitor
-
-# 启动 (默认监听 8080 端口，监控 wg0)
-sudo ./wg-monitor --password "your_secure_password"
-
-```
-
-
-
-### 方法二：Systemd 守护进程 (推荐)
-
-创建服务文件 `/etc/systemd/system/wg-monitor.service`:
-
-```ini
-[Unit]
-Description=WireGuard Monitor Dashboard
-After=network.target wg-quick@wg0.service
-
-[Service]
-Type=simple
-WorkingDirectory=/opt/wg-monitor
-# 请修改下面的参数
-ExecStart=/opt/wg-monitor/wg-monitor --iface wg0 --port :8080 --password "MySecretPass" --db /opt/wg-monitor/data.db
-Restart=always
-User=root
-
-[Install]
-WantedBy=multi-user.target
-
-```
-
-启动服务：
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now wg-monitor
-
-```
-
-### 方法三：Docker 部署
-
-*(如果您还没有创建 Dockerfile，可以在项目根目录创建如下 Dockerfile)*
-
-```dockerfile
-# Dockerfile 示例
-FROM golang:1.21-alpine AS builder
-WORKDIR /app
-COPY . .
-# 确保 index.html 存在
-RUN go build -o wg-monitor -ldflags="-s -w" main.go
-
-FROM alpine:latest
-RUN apk add --no-cache tzdata wireguard-tools
-WORKDIR /app
-COPY --from=builder /app/wg-monitor .
-CMD ["/app/wg-monitor", "--db", "/data/wg_stats.db", "--iface", "wg0"]
-
-```
-
-运行容器：
-
-```bash
-docker run -d \
-  --name wg-monitor \
-  --network host \
-  --cap-add NET_ADMIN \
-  -v /etc/wireguard:/etc/wireguard:ro \
-  -v $(pwd)/data:/data \
-  wg-monitor \
-  --password "admin123"
-
-```
-
-*注意：由于需要直接访问宿主机网络接口，建议使用 `--network host` 模式。*
-
-## ⚙️ 配置参数
-
-所有配置均通过命令行参数传递：
-
-| 参数 | 默认值 | 说明 |
-| --- | --- | --- |
-| `--iface` | `wg0` | 需监控的 WireGuard 接口名称 |
-| `--port` | `:8080` | Web 服务监听地址和端口 |
-| `--db` | `./wg_stats.db` | SQLite 数据库存储路径 |
-| `--days` | `30` | 历史流量数据保留天数 |
-| `--password` | `admin123` | 仪表盘登录密码 |
-| `--secret` | `change_...` | JWT 签名密钥 (生产环境建议修改) |
-
-示例：
-
-```bash
-./wg-monitor --iface wg1 --port :9090 --days 7 --password "StrongPass!"
-
-```
-
-## 🏗️ 开发与编译
-
-本项目采用前后端分离开发，但在发布时通过 Go 的 `embed` 特性打包为单文件。
-
-1. **准备环境**:
-* Go 1.18+
-* 确保 `index.html` (前端构建产物) 位于项目根目录。
-
-
-2. **本地运行**:
-```bash
-# 需要 root 权限以读取 wg 接口
-sudo go run main.go
-
-```
-
-
-3. **编译**:
-```bash
-# 编译为 Linux 可执行文件
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o wg-monitor -ldflags="-s -w" main.go
-
-```
-
-
-
-## 📂 项目结构
-
-```
-.
-├── main.go           # Go 后端核心逻辑 (采集、存储、API)
-├── index.html        # 前端单页应用 (Vue3 + TailwindCSS)
-├── go.mod            # Go 依赖定义
-├── go.sum
-└── README.md         # 说明文档
-
-```
-
-## 🔌 API 文档
-
-后端提供 RESTful API，所有受保护接口需要在 Header 中携带 `Authorization: Bearer <token>`。
-
-* `POST /api/login`: 获取 Token
-* `GET /api/peers`: 获取所有 Peer 实时状态
-* `GET /api/history/:publickey`: 获取指定 Peer 的历史流量
-* `GET /api/chart/traffic`: 获取全局总流量趋势
-* `GET /api/analysis`: 获取深度分析报告
-* `POST /api/alias`: 设置 Peer 别名
-
-## 🤝 贡献
-
-欢迎提交 Issue 和 Pull Request！
-
-1. Fork 本仓库
-2. 创建您的特性分支 (`git checkout -b feature/AmazingFeature`)
-3. 提交更改 (`git commit -m 'Add some AmazingFeature'`)
-4. 推送到分支 (`git push origin feature/AmazingFeature`)
-5. 开启一个 Pull Request
-
-## 📄 许可证
-
+[特性介绍](#-核心特性) • [快速开始](#-快速部署) • [配置说明](#-配置参数) • [更新日志](#-更新指南-sse-版本)
 
 ---
 
-*Made with ❤️ by [Aoxiuy]*
+![Dashboard Preview](docs/screenshot_main.png)
+![Dashboard Preview](docs/user.png)
+![Dashboard Preview](docs/tj.png)
+![Dashboard Preview](docs/ADD.png)
+![Dashboard Preview](docs/ADDQR.png) 
+
+</div>
+
+## 📖 简介
+
+**WireGuard Pro Dashboard** 是一个基于 Go 和 Vue.js 3 构建的高性能单文件管理面板。
+
+与传统面板不同，它摒弃了低效的轮询机制，采用 **Server-Sent Events (SSE)** 技术实现毫秒级的数据推送。无论您有多少客户端，仪表盘都能以极低的资源占用，呈现如水流般丝滑的实时流量波形。
+
+## ✨ 核心特性
+
+### ⚡ 极致性能 (Real-Time Experience)
+* **SSE 驱动**: 告别 `setInterval` 轮询，服务端仅在数据变动时主动推送。
+* **零延迟感**: 配合 Chart.js 实时流式渲染，流量波形平滑无卡顿。
+* **低负载**: 大幅减少无效 HTTP 请求，适合低配置 VPS 或嵌入式设备。
+
+### 📊 深度可视化
+* **实时监控**: 动态展示上传/下载速率、CPU 及内存负载。
+* **历史回溯**: 支持查看 1小时 / 24小时 / 7天 的流量趋势。
+* **流量画像**: 24小时活跃时段热力分布、Top 5 流量用户占比分析。
+
+### 🛠 全能管理
+* **客户端管理**: 一键创建/删除对等点 (Peer)，自动分配 IP。
+* **配置分发**: 自动生成二维码 (QR Code) 供手机扫码，支持下载 `.conf` 文件。
+* **别名备注**: 支持修改客户端别名，便于识别用户。
+
+### 🧠 智能分析
+* **健康评分**: 基于在线时长和活跃度，自动计算客户端健康分 (Health Score)。
+* **足迹追踪**: 记录历史连接 IP，并自动解析地理位置（显示国家/地区旗帜）。
+
+### 🔐 安全与便捷
+* **单文件部署**: 编译后仅一个二进制文件，内置静态资源，无外部依赖。
+* **数据本地化**: 使用嵌入式 SQLite 数据库，数据完全掌控。
+* **JWT 鉴权**: 标准的 Token 认证机制，安全可靠。
+
+## 🛠 技术栈
+
+| 模块 | 技术选型 | 说明 |
+| :--- | :--- | :--- |
+| **Backend** | **Go (Golang)** | Gin 框架, Wgctrl, Gopsutil |
+| **Frontend** | **Vue.js 3** | Composition API, 响应式设计 |
+| **Styling** | **Tailwind CSS** | 现代化的原子类 CSS 框架 |
+| **Charts** | **Chart.js** | 高性能 Canvas 图表库 |
+| **Database** | **SQLite** | CGO-Free (modernc.org/sqlite) |
+
+## 🚀 快速部署
+
+### 1. 环境要求
+* Linux 服务器 (Ubuntu/Debian/CentOS/Alpine)
+* 已安装 WireGuard 内核模块 (`wg-quick`, `wg` 工具可用)
+* Go 1.20+ (仅源码编译需要)
+
+### 2. 编译安装
+
+```bash
+# 1. 克隆代码
+git clone [https://github.com/yourusername/wg-dashboard.git](https://github.com/yourusername/wg-dashboard.git)
+cd wg-dashboard
+
+# 2. 编译 (生成的二进制文件包含所有静态资源)
+go build -o wg-dashboard main.go
+
+# 3. 运行 (需 root 权限以操作 wg 接口)
+sudo ./wg-dashboard
+```
+
+> **提示**: 首次运行会自动在当前目录生成 `wg_stats.db` 数据库文件。
+
+### 3. 访问面板
+
+* **地址**: `http://<服务器IP>:8080`
+* **默认密码**: `admin123`
+
+## ⚙️ 配置参数
+
+支持通过命令行参数自定义配置：
+
+```bash
+sudo ./wg-dashboard [参数...]
+
+```
+
+| 参数 | 默认值 | 描述 |
+| --- | --- | --- |
+| `-port` | `:8080` | Web 服务监听端口 |
+| `-iface` | `wg0` | 监控的 WireGuard 接口名称 |
+| `-password` | `admin123` | **(强烈建议修改)** 管理员登录密码 |
+| `-db` | `./wg_stats.db` | SQLite 数据库存储路径 |
+| `-days` | `30` | 历史流量统计数据保留天数 |
+| `-secret` | `change_...` | JWT 签名密钥 (用于生成 Token) |
+
+**生产环境示例:**
+
+```bash
+sudo ./wg-dashboard -port :80 -iface wg0 -password "MySecurePass!" -days 90
+
+```
+
+## 🔄 更新指南 (SSE 版本)
+
+如果您是从旧版本（轮询版）升级，请注意以下变动：
+
+1. **停止服务**: `pkill wg-dashboard`
+2. **替换文件**: 更新 `main.go` 和 `index.html`。
+3. **重新编译**: `go build -o wg-dashboard main.go`
+4. **数据库迁移**: 程序启动时会自动检测并升级数据库表结构（添加 `endpoint` 字段），**无需手动操作**。
+5. **重启服务**: 享受丝滑的实时体验！
+
+## 📂 项目结构
+
+```text
+.
+├── main.go              # Go 主程序 (API, SSE 广播, 定时任务)
+├── index.html           # Vue3 前端入口 (通过 embed 嵌入 Go)
+├── static/              # 静态资源目录
+│   └── js/              # Vue, Tailwind, Chart.js 等依赖库
+├── wg_stats.db          # SQLite 数据库 (自动生成)
+└── README.md            # 项目文档
+
+```
+
+## 🤝 贡献与支持
+
+欢迎提交 **Pull Request** 或 **Issue** 来改进这个项目！
+如果你觉得这个项目对你有帮助，请给一个 ⭐️ **Star**！
+
+## 📄 开源协议
+
+基于 ![License](https://img.shields.io/badge/License-GPLv3-blue.svg) 开源。
+
+```
+
+```
