@@ -11,6 +11,7 @@
     <script src="/static/js/chart.umd.min.js"></script>
     <script src="/static/js/chartjs-adapter-date-fns.bundle.min.js"></script>
     <script src="/static/js/tailwindcss.js"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/lipis/flag-icons@7.0.0/css/flag-icons.min.css" />
     <script src="/static/js/lucide.min.js"></script>
     <script src="/static/js/qrcode.min.js"></script>
 
@@ -835,10 +836,13 @@
                                         <td class="p-3 text-slate-500">{{ log.timestamp }}</td>
                                         <td class="p-3">
                                             <div class="flex items-center gap-2">
-                                                <img v-if="getCountryCode(log.endpoint)"
-                                                    :src="`https://flagcdn.com/w20/${getCountryCode(log.endpoint).toLowerCase()}.png`"
-                                                    class="w-5 h-auto rounded shadow-sm object-cover"
+                                                <span v-if="getCountryCode(log.endpoint)"
+                                                    :class="`fi fi-${getCountryCode(log.endpoint).toLowerCase()} w-5 h-4 rounded shadow-sm`"
                                                     :title="getCountryCode(log.endpoint)">
+                                                </span>
+                                                <span v-else
+                                                    class="w-5 h-4 rounded bg-slate-200 dark:bg-slate-700 animate-pulse"></span>
+
                                                 <span class="font-bold font-mono">{{ log.endpoint }}</span>
                                             </div>
                                         </td>
@@ -979,7 +983,20 @@
 
                 // --- IP 地理位置缓存 ---
                 const ipCache = reactive({});
-                const getIp = (endpoint) => endpoint ? endpoint.split(':')[0].replace('[', '').replace(']', '') : '';
+                const getIp = (endpoint) => {
+                    if (!endpoint) return '';
+                    // 如果是 [ipv6]:port 格式，提取中括号内的内容
+                    if (endpoint.startsWith('[')) {
+                        const end = endpoint.indexOf(']');
+                        if (end > -1) return endpoint.substring(1, end);
+                    }
+                    // 如果没有中括号但有多个冒号，说明本身就是纯 IPv6 地址 (没有端口)
+                    if (endpoint.split(':').length > 2) {
+                        return endpoint;
+                    }
+                    // IPv4 格式 1.2.3.4:51820
+                    return endpoint.split(':')[0];
+                };
                 const isPrivateIp = (ip) => ip.startsWith('127.') || ip.startsWith('10.') || ip.startsWith('192.168.') || ip.startsWith('172.16.');
 
                 const resolveIpLocation = async (endpoint) => {
