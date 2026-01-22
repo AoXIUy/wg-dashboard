@@ -12,7 +12,7 @@
 ---
 
 ![Dashboard Preview](docs/screenshot_main.png)
-*(建议上传一张截图放入 docs 目录)*
+
 
 </div>
 
