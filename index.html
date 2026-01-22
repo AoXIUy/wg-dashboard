@@ -6,13 +6,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>WireGuard Pro Dashboard</title>
 
-    <!-- 依赖库 -->
-    <script src="/static/js/vue.min.js"></script>
+    <script src="/static/js/vue.global.prod.js"></script>
     <script src="/static/js/axios.min.js"></script>
     <script src="/static/js/chart.umd.min.js"></script>
     <script src="/static/js/chartjs-adapter-date-fns.bundle.min.js"></script>
     <script src="/static/js/tailwindcss.js"></script>
     <script src="/static/js/lucide.min.js"></script>
+    <script src="/static/js/qrcode.min.js"></script>
 
     <script>
         tailwind.config = {
@@ -75,9 +75,6 @@
             pointer-events: none;
             z-index: -1;
             transition: opacity 0.5s ease;
-        }
-
-        .bg-overlay {
             background: radial-gradient(circle at 0% 0%, rgba(59, 130, 246, 0.08) 0%, transparent 50%),
                 radial-gradient(circle at 100% 100%, rgba(139, 92, 246, 0.08) 0%, transparent 50%);
         }
@@ -196,6 +193,11 @@
                 opacity: 0;
             }
         }
+
+        .custom-scrollbar::-webkit-scrollbar {
+            height: 6px;
+            width: 6px;
+        }
     </style>
 </head>
 
@@ -203,7 +205,6 @@
     <div class="bg-overlay"></div>
 
     <div id="app" v-cloak>
-        <!-- Toast 通知容器 -->
         <div
             class="fixed top-6 left-1/2 -translate-x-1/2 z-[110] flex flex-col gap-3 pointer-events-none w-full max-w-sm px-4">
             <transition-group name="toast">
@@ -221,12 +222,10 @@
             </transition-group>
         </div>
 
-        <!-- 登录界面 -->
         <div v-if="!token" class="min-h-screen flex items-center justify-center p-4 relative overflow-hidden">
             <div
                 class="absolute w-[800px] h-[800px] bg-blue-500/20 dark:bg-blue-600/10 rounded-full blur-[120px] animate-blob mix-blend-multiply dark:mix-blend-screen opacity-50">
             </div>
-
             <div class="glass-card w-full max-w-[400px] p-8 rounded-3xl shadow-2xl relative z-10">
                 <div class="text-center mb-8">
                     <div
@@ -250,16 +249,13 @@
                             class="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></span>
                         {{ isLoggingIn ? '验证中...' : '进入控制台' }}
                     </button>
-                    <div v-if="loginError" class="text-red-500 text-xs text-center mt-2 animate-pulse">
-                        {{ loginError }}
+                    <div v-if="loginError" class="text-red-500 text-xs text-center mt-2 animate-pulse">{{ loginError }}
                     </div>
                 </form>
             </div>
         </div>
 
-        <!-- 主面板 -->
         <div v-else class="max-w-[1600px] mx-auto p-4 lg:p-8 space-y-6 relative z-10">
-            <!-- 顶部导航栏 -->
             <header
                 class="glass-card rounded-2xl p-4 flex flex-col md:flex-row justify-between items-center gap-4 sticky top-4 z-40 transition-all duration-300">
                 <div class="flex items-center gap-4 w-full md:w-auto">
@@ -301,32 +297,27 @@
                     </div>
 
                     <button @click="toggleTheme"
-                        class="p-2.5 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400 transition-colors"
-                        :title="isDark ? '切换亮色' : '切换暗色'">
+                        class="p-2.5 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400 transition-colors">
                         <i :data-lucide="isDark ? 'sun' : 'moon'" class="w-5 h-5"></i>
                     </button>
 
                     <button @click="toggleAutoRefresh"
-                        :class="['p-2.5 rounded-xl transition-colors', autoRefresh ? 'text-emerald-500 bg-emerald-50 dark:bg-emerald-500/10' : 'text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800']"
-                        title="自动刷新">
+                        :class="['p-2.5 rounded-xl transition-colors', autoRefresh ? 'text-emerald-500 bg-emerald-50 dark:bg-emerald-500/10' : 'text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800']">
                         <i data-lucide="refresh-cw" :class="['w-5 h-5', autoRefresh ? 'animate-spin' : '']"></i>
                     </button>
 
                     <button @click="openAnalysis"
-                        class="p-2.5 rounded-xl hover:bg-blue-50 dark:hover:bg-blue-500/10 text-slate-500 dark:text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 transition-colors"
-                        title="深度分析">
+                        class="p-2.5 rounded-xl hover:bg-blue-50 dark:hover:bg-blue-500/10 text-slate-500 dark:text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 transition-colors">
                         <i data-lucide="pie-chart" class="w-5 h-5"></i>
                     </button>
 
                     <button @click="logout"
-                        class="p-2.5 rounded-xl hover:bg-red-50 dark:hover:bg-red-500/10 text-slate-500 dark:text-slate-400 hover:text-red-600 dark:hover:text-red-400 transition-colors"
-                        title="退出登录">
+                        class="p-2.5 rounded-xl hover:bg-red-50 dark:hover:bg-red-500/10 text-slate-500 dark:text-slate-400 hover:text-red-600 dark:hover:text-red-400 transition-colors">
                         <i data-lucide="log-out" class="w-5 h-5"></i>
                     </button>
                 </div>
             </header>
 
-            <!-- 流量趋势图表区域 -->
             <section class="glass-card rounded-3xl p-6 relative overflow-hidden">
                 <div
                     class="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 gap-4 relative z-10">
@@ -335,7 +326,6 @@
                                 data-lucide="trending-up" class="w-4 h-4"></i></span>
                         网络流量
                     </h3>
-
                     <div class="flex items-center gap-4 text-xs">
                         <div class="flex items-center gap-2">
                             <span class="w-2 h-2 rounded-full bg-blue-500"></span>
@@ -358,15 +348,12 @@
                         </select>
                     </div>
                 </div>
-
                 <div class="h-[280px] w-full relative z-10">
                     <canvas id="mainChart"></canvas>
                 </div>
             </section>
 
-            <!-- 客户端列表区域 -->
             <section class="glass-card rounded-3xl overflow-hidden flex flex-col min-h-[600px]">
-                <!-- 工具栏 -->
                 <div
                     class="p-5 border-b border-slate-200 dark:border-white/5 flex flex-col lg:flex-row justify-between items-center gap-4 bg-slate-50/50 dark:bg-slate-900/30">
                     <div class="flex items-center gap-3 w-full lg:w-auto">
@@ -375,9 +362,7 @@
                             class="px-2 py-0.5 rounded-md bg-slate-200/50 dark:bg-slate-700/50 text-xs font-medium text-slate-600 dark:text-slate-300">
                             {{ peers.length }}
                         </span>
-
                         <div class="h-4 w-[1px] bg-slate-300 dark:bg-slate-700 mx-1"></div>
-
                         <select v-model="statusFilter"
                             class="bg-transparent text-sm text-slate-600 dark:text-slate-300 outline-none cursor-pointer hover:text-blue-500 transition-colors">
                             <option value="all">全部</option>
@@ -386,15 +371,22 @@
                         </select>
                     </div>
 
-                    <div class="relative w-full lg:w-64 group">
-                        <i data-lucide="search"
-                            class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 group-focus-within:text-blue-500 transition-colors"></i>
-                        <input v-model="searchQuery" type="text" placeholder="搜索客户端..."
-                            class="w-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-200 text-sm rounded-xl pl-9 pr-4 py-2 focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500 outline-none transition-all placeholder:text-slate-400">
+                    <div class="flex items-center gap-3 w-full lg:w-auto justify-end">
+                        <button @click="openAddModal"
+                            class="p-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white shadow-lg shadow-blue-600/20 transition-all flex items-center gap-2 active:scale-95">
+                            <i data-lucide="plus" class="w-4 h-4"></i>
+                            <span class="text-sm font-bold hidden sm:inline">新增</span>
+                        </button>
+
+                        <div class="relative w-full lg:w-64 group">
+                            <i data-lucide="search"
+                                class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 group-focus-within:text-blue-500 transition-colors"></i>
+                            <input v-model="searchQuery" type="text" placeholder="搜索客户端..."
+                                class="w-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-200 text-sm rounded-xl pl-9 pr-4 py-2 focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500 outline-none transition-all placeholder:text-slate-400">
+                        </div>
                     </div>
                 </div>
 
-                <!-- 桌面端表格 -->
                 <div class="hidden md:block overflow-x-auto flex-1 custom-scrollbar">
                     <table class="w-full text-left border-collapse">
                         <thead
@@ -410,11 +402,11 @@
                                     实时速率 <i data-lucide="arrow-up-down" class="w-3 h-3 inline ml-1 opacity-50"></i>
                                 </th>
                                 <th @click="sort('transfer')"
-                                    class="p-5 cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-800/50 transition-colors w-[25%]">
+                                    class="p-5 cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-800/50 transition-colors w-[20%]">
                                     流量统计 (Tx/Rx) <i data-lucide="arrow-up-down"
                                         class="w-3 h-3 inline ml-1 opacity-50"></i>
                                 </th>
-                                <th class="p-5 text-right w-[10%]">操作</th>
+                                <th class="p-5 text-right w-[15%]">操作</th>
                             </tr>
                         </thead>
                         <tbody class="divide-y divide-slate-100 dark:divide-slate-800/50 text-sm">
@@ -437,7 +429,6 @@
                                                     @keyup.enter="saveAlias(p.public_key)"
                                                     class="bg-white dark:bg-slate-900 border border-blue-500 rounded px-2 py-0.5 outline-none w-32 text-xs text-slate-800 dark:text-white shadow-sm"
                                                     autofocus>
-
                                                 <div class="text-[10px] text-slate-400 font-mono mt-1 flex items-center gap-1 group/key cursor-pointer"
                                                     @click="copyText(p.public_key, '公钥')">
                                                     {{ p.public_key.substring(0,8) }}...
@@ -454,9 +445,7 @@
                                                 {{ p.allowed_ips[0] }}
                                             </div>
                                             <div class="text-[10px] text-slate-400 truncate max-w-[140px]"
-                                                :title="p.endpoint">
-                                                {{ p.endpoint || '未连接' }}
-                                            </div>
+                                                :title="p.endpoint">{{ p.endpoint || '未连接' }}</div>
                                         </div>
                                     </td>
                                     <td class="p-5 font-mono text-xs">
@@ -486,16 +475,23 @@
                                         </div>
                                     </td>
                                     <td class="p-5 text-right">
-                                        <button @click="openDetail(p)"
-                                            class="p-2 rounded-lg text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-blue-600 transition-all">
-                                            <i data-lucide="bar-chart-2" class="w-4 h-4"></i>
-                                        </button>
+                                        <div class="flex justify-end gap-2">
+                                            <button @click="openDetail(p)"
+                                                class="p-2 rounded-lg text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-blue-600 transition-all"
+                                                title="详情">
+                                                <i data-lucide="bar-chart-2" class="w-4 h-4"></i>
+                                            </button>
+                                            <button @click="deletePeer(p)"
+                                                class="p-2 rounded-lg text-slate-400 hover:bg-red-50 dark:hover:bg-red-900/20 hover:text-red-600 transition-all"
+                                                title="删除">
+                                                <i data-lucide="trash-2" class="w-4 h-4"></i>
+                                            </button>
+                                        </div>
                                     </td>
                                 </tr>
                             </transition-group>
                         </tbody>
                     </table>
-
                     <div v-if="sortedPeers.length === 0"
                         class="flex flex-col items-center justify-center p-20 text-slate-400">
                         <i data-lucide="search-x" class="w-12 h-12 mb-4 opacity-50"></i>
@@ -503,7 +499,6 @@
                     </div>
                 </div>
 
-                <!-- 移动端列表 -->
                 <div class="md:hidden p-4 space-y-4 flex-1 overflow-y-auto">
                     <transition-group name="list">
                         <div v-for="p in sortedPeers" :key="p.public_key"
@@ -521,12 +516,17 @@
                                         <div class="text-[10px] text-slate-500 font-mono">{{ p.allowed_ips[0] }}</div>
                                     </div>
                                 </div>
-                                <button @click="openDetail(p)"
-                                    class="p-2 -mr-2 -mt-2 text-slate-400 hover:text-blue-500">
-                                    <i data-lucide="chevron-right" class="w-5 h-5"></i>
-                                </button>
+                                <div class="flex gap-2">
+                                    <button @click="deletePeer(p)"
+                                        class="p-2 -mr-2 -mt-2 text-slate-400 hover:text-red-500">
+                                        <i data-lucide="trash-2" class="w-5 h-5"></i>
+                                    </button>
+                                    <button @click="openDetail(p)"
+                                        class="p-2 -mr-2 -mt-2 text-slate-400 hover:text-blue-500">
+                                        <i data-lucide="chevron-right" class="w-5 h-5"></i>
+                                    </button>
+                                </div>
                             </div>
-
                             <div
                                 class="grid grid-cols-2 gap-2 bg-slate-50 dark:bg-slate-900/50 rounded-xl p-3 border border-slate-100 dark:border-white/5">
                                 <div>
@@ -546,7 +546,106 @@
             </section>
         </div>
 
-        <!-- 弹窗：深度分析 -->
+        <Transition enter-active-class="transition duration-300 ease-out" enter-from-class="opacity-0 scale-95 blur-sm"
+            enter-to-class="opacity-100 scale-100 blur-0" leave-active-class="transition duration-200 ease-in"
+            leave-from-class="opacity-100 scale-100" leave-to-class="opacity-0 scale-95 blur-sm">
+            <div v-if="showAddModal"
+                class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+                <div class="glass-card bg-white dark:bg-[#0f172a] rounded-3xl w-full max-w-md p-6 shadow-2xl">
+                    <div class="flex justify-between items-center mb-6">
+                        <h2 class="text-xl font-bold text-slate-800 dark:text-white flex items-center gap-2">
+                            <i data-lucide="user-plus" class="w-5 h-5 text-blue-500"></i> 新增客户端
+                        </h2>
+                        <button @click="showAddModal=false"
+                            class="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full text-slate-500"><i
+                                data-lucide="x" class="w-5 h-5"></i></button>
+                    </div>
+                    <form @submit.prevent="createPeer" class="space-y-4">
+                        <div>
+                            <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">接口
+                                (Interface)</label>
+                            <select v-model="newPeer.config" @change="suggestIP"
+                                class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-2 text-sm focus:ring-2 focus:ring-blue-500/50 outline-none">
+                                <option v-for="c in availableConfigs" :value="c">{{ c }}</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label
+                                class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">备注名称</label>
+                            <input v-model="newPeer.name" type="text" placeholder="例如: iPhone-User"
+                                class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-2 text-sm focus:ring-2 focus:ring-blue-500/50 outline-none"
+                                required>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">分配 IP
+                                (AllowedIPs)</label>
+                            <div class="flex gap-2">
+                                <input v-model="newPeer.ip" type="text" placeholder="自动分配..."
+                                    class="flex-1 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-2 text-sm focus:ring-2 focus:ring-blue-500/50 outline-none"
+                                    required>
+                                <button type="button" @click="suggestIP"
+                                    class="px-3 py-2 bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 rounded-xl text-sm hover:bg-slate-200 dark:hover:bg-slate-600 transition-colors flex items-center gap-1">
+                                    <i v-if="ipLoading" data-lucide="loader-2" class="w-4 h-4 animate-spin"></i>
+                                    <span v-else>自动</span>
+                                </button>
+                            </div>
+                        </div>
+                        <button type="submit"
+                            class="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 rounded-xl transition-all shadow-lg shadow-blue-600/20 mt-2">
+                            创建并应用
+                        </button>
+                    </form>
+                </div>
+            </div>
+        </Transition>
+
+        <Transition enter-active-class="transition duration-300 ease-out" enter-from-class="opacity-0 scale-95 blur-sm"
+            enter-to-class="opacity-100 scale-100 blur-0" leave-active-class="transition duration-200 ease-in"
+            leave-from-class="opacity-100 scale-100" leave-to-class="opacity-0 scale-95 blur-sm">
+            <div v-if="showConfigModal"
+                class="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+                @click.self="showConfigModal=false">
+                <div
+                    class="glass-card bg-white dark:bg-[#0f172a] rounded-3xl w-full max-w-md p-6 shadow-2xl flex flex-col items-center">
+                    <div class="flex justify-between items-center w-full mb-4">
+                        <h2 class="text-xl font-bold text-slate-800 dark:text-white flex items-center gap-2">
+                            <i data-lucide="qr-code" class="w-5 h-5 text-emerald-500"></i> 配置创建成功
+                        </h2>
+                        <button @click="showConfigModal=false"
+                            class="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full text-slate-500"><i
+                                data-lucide="x" class="w-5 h-5"></i></button>
+                    </div>
+
+                    <div class="bg-white p-4 rounded-xl shadow-inner mb-4 relative group">
+                        <div id="qrcode"></div>
+                        <div class="absolute inset-0 flex items-center justify-center bg-white/90 text-slate-500 text-xs opacity-0 transition-opacity pointer-events-none"
+                            :class="{'opacity-100': isQrUpdating}">
+                            <i data-lucide="refresh-cw" class="w-4 h-4 animate-spin mr-1"></i> 更新中...
+                        </div>
+                    </div>
+
+                    <div class="w-full mb-4">
+                        <div class="flex justify-between items-center mb-2">
+                            <div
+                                class="text-xs text-yellow-600 bg-yellow-50 dark:bg-yellow-900/20 dark:text-yellow-400 px-2 py-1 rounded flex items-center gap-1">
+                                <i data-lucide="alert-triangle" class="w-3 h-3"></i> 私钥仅显示一次
+                            </div>
+                            <span class="text-[10px] text-slate-400">可编辑下方文本实时更新二维码</span>
+                        </div>
+                        <textarea v-model="generatedConfigStr"
+                            class="w-full h-32 bg-slate-50 dark:bg-slate-900 font-mono text-xs p-3 rounded-xl border border-slate-200 dark:border-slate-700 outline-none resize-none focus:ring-2 focus:ring-emerald-500/50 transition-all"
+                            placeholder="在此编辑配置...">
+                        </textarea>
+                    </div>
+
+                    <button @click="downloadConfig"
+                        class="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-3 rounded-xl transition-all shadow-lg shadow-emerald-600/20 flex items-center justify-center gap-2">
+                        <i data-lucide="download" class="w-4 h-4"></i> 下载 .conf 文件
+                    </button>
+                </div>
+            </div>
+        </Transition>
+
         <Transition enter-active-class="transition duration-300 ease-out" enter-from-class="opacity-0 scale-95 blur-sm"
             enter-to-class="opacity-100 scale-100 blur-0" leave-active-class="transition duration-200 ease-in"
             leave-from-class="opacity-100 scale-100" leave-to-class="opacity-0 scale-95 blur-sm">
@@ -561,22 +660,17 @@
                             <i data-lucide="pie-chart" class="w-5 h-5 text-blue-500"></i> 网络分析
                         </h2>
                         <button @click="showAnalysis=false"
-                            class="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full text-slate-500 transition-colors"><i
+                            class="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full text-slate-500"><i
                                 data-lucide="x" class="w-5 h-5"></i></button>
                     </div>
-
                     <div class="p-6 overflow-y-auto custom-scrollbar flex-1">
-                        <!-- 加载状态 -->
                         <div v-if="analysisLoading" class="flex flex-col items-center justify-center h-[400px] gap-3">
                             <div
                                 class="animate-spin w-8 h-8 border-2 border-blue-500 border-t-transparent rounded-full">
                             </div>
                             <span class="text-slate-400 text-sm">正在分析网络数据...</span>
                         </div>
-
-                        <!-- 图表内容 -->
                         <div v-else class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                            <!-- 饼图 -->
                             <div
                                 class="bg-slate-50 dark:bg-slate-800/30 p-5 rounded-2xl border border-slate-100 dark:border-white/5 flex flex-col">
                                 <h3
@@ -587,8 +681,6 @@
                                     <canvas id="trafficPieChart"></canvas>
                                 </div>
                             </div>
-
-                            <!-- 柱状图 -->
                             <div
                                 class="bg-slate-50 dark:bg-slate-800/30 p-5 rounded-2xl border border-slate-100 dark:border-white/5 flex flex-col">
                                 <h3
@@ -599,8 +691,6 @@
                                     <canvas id="activityBarChart"></canvas>
                                 </div>
                             </div>
-
-                            <!-- 客户端健康评分表格 -->
                             <div
                                 class="md:col-span-2 bg-slate-50 dark:bg-slate-800/30 rounded-2xl border border-slate-100 dark:border-white/5 overflow-hidden">
                                 <div
@@ -665,7 +755,6 @@
             </div>
         </Transition>
 
-        <!-- 弹窗：客户端详情 -->
         <Transition enter-active-class="transition duration-300 ease-out" enter-from-class="opacity-0 translate-y-8"
             enter-to-class="opacity-100 translate-y-0" leave-active-class="transition duration-200 ease-in"
             leave-from-class="opacity-100" leave-to-class="opacity-0 translate-y-8">
@@ -689,7 +778,6 @@
                             class="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg text-slate-500"><i
                                 data-lucide="x" class="w-5 h-5"></i></button>
                     </div>
-
                     <div class="flex justify-end mb-4">
                         <div class="bg-slate-100 dark:bg-slate-800 rounded-lg p-1 flex text-xs">
                             <button v-for="p in ['realtime','1h','24h','7d']" :key="p"
@@ -701,7 +789,7 @@
                     </div>
 
                     <div
-                        class="h-[350px] w-full bg-slate-50 dark:bg-slate-900/30 rounded-2xl p-4 border border-slate-100 dark:border-white/5 relative">
+                        class="h-[350px] w-full bg-slate-50 dark:bg-slate-900/30 rounded-2xl p-4 border border-slate-100 dark:border-white/5 relative mb-4">
                         <div v-if="chartLoading"
                             class="absolute inset-0 flex items-center justify-center bg-white/50 dark:bg-slate-900/50 backdrop-blur-[1px] z-10 rounded-2xl">
                             <div
@@ -710,21 +798,129 @@
                         </div>
                         <canvas id="detailChart"></canvas>
                     </div>
+
+                    <div
+                        class="bg-slate-50 dark:bg-slate-900/30 rounded-2xl border border-slate-100 dark:border-white/5 overflow-hidden flex flex-col max-h-[300px]">
+                        <div
+                            class="p-3 border-b border-slate-200 dark:border-white/5 bg-slate-100/50 dark:bg-slate-900/50 flex items-center justify-between sticky top-0">
+                            <h3 class="font-bold text-slate-700 dark:text-slate-300 text-sm flex items-center gap-2">
+                                <i data-lucide="history" class="w-4 h-4 text-blue-500"></i> 连接历史 (Top 100)
+                            </h3>
+                            <button @click="fetchAccessLogs"
+                                class="p-1 hover:bg-slate-200 dark:hover:bg-slate-700 rounded text-slate-400">
+                                <i data-lucide="refresh-cw" class="w-3 h-3"></i>
+                            </button>
+                        </div>
+                        <div class="overflow-y-auto custom-scrollbar">
+                            <table class="w-full text-left text-xs">
+                                <thead
+                                    class="bg-slate-100 dark:bg-slate-900/80 text-slate-500 dark:text-slate-400 sticky top-0 z-10">
+                                    <tr>
+                                        <th class="p-3">时间</th>
+                                        <th class="p-3">来源 IP</th>
+                                        <th class="p-3 text-right">累计下载 (Rx)</th>
+                                        <th class="p-3 text-right">累计上传 (Tx)</th>
+                                    </tr>
+                                </thead>
+                                <tbody
+                                    class="divide-y divide-slate-200 dark:divide-white/5 text-slate-600 dark:text-slate-300 font-mono">
+                                    <tr v-if="logsLoading">
+                                        <td colspan="4" class="p-4 text-center text-slate-400">加载中...</td>
+                                    </tr>
+                                    <tr v-else-if="accessLogs.length === 0">
+                                        <td colspan="4" class="p-4 text-center text-slate-400">暂无历史记录</td>
+                                    </tr>
+                                    <tr v-for="log in accessLogs" :key="log.timestamp + log.endpoint"
+                                        class="hover:bg-slate-100 dark:hover:bg-white/5 transition-colors">
+                                        <td class="p-3 text-slate-500">{{ log.timestamp }}</td>
+                                        <td class="p-3">
+                                            <div class="flex items-center gap-2">
+                                                <img v-if="getCountryCode(log.endpoint)"
+                                                    :src="`https://flagcdn.com/w20/${getCountryCode(log.endpoint).toLowerCase()}.png`"
+                                                    class="w-5 h-auto rounded shadow-sm object-cover"
+                                                    :title="getCountryCode(log.endpoint)">
+                                                <span class="font-bold font-mono">{{ log.endpoint }}</span>
+                                            </div>
+                                        </td>
+                                        <td class="p-3 text-right text-emerald-600 dark:text-emerald-400">{{
+                                            fmtBytes(log.rx_total) }}</td>
+                                        <td class="p-3 text-right text-blue-600 dark:text-blue-400">{{
+                                            fmtBytes(log.tx_total) }}</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                </div>
+            </div>
+        </Transition>
+
+        <Transition enter-active-class="transition duration-300 ease-out" enter-from-class="opacity-0 scale-95 blur-sm"
+            enter-to-class="opacity-100 scale-100 blur-0" leave-active-class="transition duration-200 ease-in"
+            leave-from-class="opacity-100 scale-100" leave-to-class="opacity-0 scale-95 blur-sm">
+            <div v-if="showDeleteModal"
+                class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+                <div
+                    class="glass-card bg-white dark:bg-[#0f172a] rounded-3xl w-full max-w-sm p-6 shadow-2xl text-center">
+
+                    <div
+                        class="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-red-100 dark:bg-red-900/30 mb-4">
+                        <i data-lucide="alert-triangle" class="h-8 w-8 text-red-600 dark:text-red-500"></i>
+                    </div>
+
+                    <h3 class="text-lg font-bold text-slate-800 dark:text-white mb-2">确认删除客户端?</h3>
+
+                    <div class="text-sm text-slate-500 dark:text-slate-400 mb-6">
+                        您确定要删除 <span class="font-bold text-slate-800 dark:text-slate-200 mx-1">{{ peerToDelete?.alias ||
+                            '未命名' }}</span> 吗？
+                        <br>
+                        <span class="text-xs mt-1 block text-red-500/80">此操作将修改配置文件并立即重启接口。</span>
+                    </div>
+
+                    <div class="flex gap-3">
+                        <button @click="showDeleteModal=false" type="button"
+                            class="flex-1 px-4 py-2.5 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 rounded-xl font-medium hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors">
+                            取消
+                        </button>
+                        <button @click="confirmDelete" :disabled="deleteLoading" type="button"
+                            class="flex-1 px-4 py-2.5 bg-red-600 text-white rounded-xl font-medium hover:bg-red-700 shadow-lg shadow-red-600/20 transition-all active:scale-95 flex items-center justify-center gap-2 disabled:opacity-70 disabled:cursor-not-allowed">
+                            <i v-if="deleteLoading" data-lucide="loader-2" class="w-4 h-4 animate-spin"></i>
+                            <span v-else>确认删除</span>
+                        </button>
+                    </div>
                 </div>
             </div>
         </Transition>
     </div>
 
     <script>
-        const { createApp, ref, onMounted, onUnmounted, computed, nextTick, watch } = Vue;
+        const { createApp, ref, reactive, onMounted, onUnmounted, computed, nextTick, watch } = Vue;
 
-        // Chart.js 全局配置优化
-        Chart.defaults.font.family = "'Inter', system-ui, sans-serif";
+        // --- Chart.js 全局配置 ---
+        Chart.defaults.font.family = "'JetBrains Mono', 'Inter', system-ui, sans-serif";
+        Chart.defaults.color = '#64748b';
+        Chart.defaults.scale.grid.color = 'transparent';
+        Chart.defaults.maintainAspectRatio = false;
+        Chart.defaults.responsive = true;
+        Chart.defaults.animation = false;
+        Chart.defaults.elements.line.borderWidth = 1.5;
+        Chart.defaults.elements.line.tension = 0.4;
+        Chart.defaults.elements.point.radius = 0;
+        Chart.defaults.elements.point.hitRadius = 20;
+        Chart.defaults.elements.point.hoverRadius = 4;
+        Chart.defaults.plugins.tooltip.enabled = true;
+        Chart.defaults.plugins.tooltip.mode = 'index';
+        Chart.defaults.plugins.tooltip.intersect = false;
+        Chart.defaults.plugins.tooltip.backgroundColor = 'rgba(15, 23, 42, 0.9)';
+        Chart.defaults.plugins.tooltip.titleColor = '#fff';
+        Chart.defaults.plugins.tooltip.bodyColor = '#cbd5e1';
+        Chart.defaults.plugins.tooltip.borderColor = 'rgba(255,255,255,0.1)';
+        Chart.defaults.plugins.tooltip.borderWidth = 1;
         Chart.defaults.plugins.tooltip.padding = 10;
         Chart.defaults.plugins.tooltip.cornerRadius = 8;
-        Chart.defaults.elements.point.radius = 0; // 默认不显示点，提升性能
-        Chart.defaults.elements.point.hitRadius = 15; // 增加交互热区
-        Chart.defaults.maintainAspectRatio = false;
+        Chart.defaults.plugins.tooltip.displayColors = true;
+        Chart.defaults.plugins.tooltip.boxPadding = 4;
 
         // 防抖函数
         function debounce(func, wait) {
@@ -737,13 +933,11 @@
 
         createApp({
             setup() {
-                // --- 状态定义 ---
                 const token = ref(localStorage.getItem('wg_token') || '');
                 const peers = ref([]);
                 const sysInfo = ref({ cpu_percent: 0, mem_percent: 0 });
                 const meta = ref({ interface: 'wg0', port: '51820' });
 
-                // UI 交互
                 const searchQuery = ref('');
                 const debouncedSearch = ref('');
                 const statusFilter = ref('all');
@@ -754,7 +948,6 @@
                 const toasts = ref([]);
                 const isDark = ref(false);
 
-                // 图表与排序
                 const sortKey = ref('rate');
                 const sortDesc = ref(true);
                 const mainChartPeriod = ref('realtime');
@@ -762,12 +955,46 @@
                 const historyPeriod = ref('realtime');
                 const chartLoading = ref(false);
 
-                // 分析模块状态
                 const showAnalysis = ref(false);
                 const analysisLoading = ref(false);
                 const analysisData = ref(null);
 
-                // 实例引用
+                // 管理功能状态
+                const showAddModal = ref(false);
+                const showConfigModal = ref(false);
+                const availableConfigs = ref([]);
+                const newPeer = reactive({ config: '', name: '', ip: '' });
+                const generatedConfigStr = ref('');
+                const ipLoading = ref(false);
+                const isQrUpdating = ref(false);
+
+                // 删除确认弹窗状态
+                const showDeleteModal = ref(false);
+                const peerToDelete = ref(null);
+                const deleteLoading = ref(false);
+
+                // 历史日志状态
+                const accessLogs = ref([]);
+                const logsLoading = ref(false);
+
+                // --- IP 地理位置缓存 ---
+                const ipCache = reactive({});
+                const getIp = (endpoint) => endpoint ? endpoint.split(':')[0].replace('[', '').replace(']', '') : '';
+                const isPrivateIp = (ip) => ip.startsWith('127.') || ip.startsWith('10.') || ip.startsWith('192.168.') || ip.startsWith('172.16.');
+
+                const resolveIpLocation = async (endpoint) => {
+                    const ip = getIp(endpoint);
+                    if (!ip || isPrivateIp(ip) || ipCache.hasOwnProperty(ip)) return;
+                    ipCache[ip] = ''; // 标记为已请求
+                    try {
+                        const res = await fetch(`http://ip-api.com/json/${ip}?fields=status,countryCode`);
+                        const data = await res.json();
+                        if (data.status === 'success') ipCache[ip] = data.countryCode;
+                    } catch (e) { }
+                };
+
+                const getCountryCode = (endpoint) => ipCache[getIp(endpoint)];
+
                 let mainChartInst = null;
                 let detailChartInst = null;
                 let pieChart = null;
@@ -775,16 +1002,17 @@
                 let pollTimer = null;
                 let iconsTimer = null;
 
-                // --- 核心逻辑 ---
+                const createGradient = (ctx, c1, c2) => {
+                    const gradient = ctx.createLinearGradient(0, 0, 0, 320);
+                    gradient.addColorStop(0, c1);
+                    gradient.addColorStop(0.9, c2);
+                    return gradient;
+                };
 
-                // 主题管理
                 const initTheme = () => {
                     const saved = localStorage.getItem('theme');
-                    if (saved) {
-                        isDark.value = saved === 'dark';
-                    } else {
-                        isDark.value = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
-                    }
+                    if (saved) isDark.value = saved === 'dark';
+                    else isDark.value = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
                     applyTheme();
                     window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', e => {
                         if (!localStorage.getItem('theme')) {
@@ -808,10 +1036,7 @@
 
                 const updateChartTheme = () => {
                     const textColor = isDark.value ? '#94a3b8' : '#64748b';
-                    const gridColor = isDark.value ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.05)';
-                    const tooltipBg = isDark.value ? 'rgba(15, 23, 42, 0.95)' : 'rgba(255, 255, 255, 0.95)';
-                    const tooltipText = isDark.value ? '#f8fafc' : '#1e293b';
-
+                    const gridColor = isDark.value ? 'rgba(255,255,255,0.03)' : 'rgba(0,0,0,0.03)';
                     [mainChartInst, detailChartInst, pieChart, barChart].forEach(chart => {
                         if (chart) {
                             if (chart.options.scales.x) chart.options.scales.x.ticks.color = textColor;
@@ -819,15 +1044,12 @@
                                 chart.options.scales.y.ticks.color = textColor;
                                 chart.options.scales.y.grid.color = gridColor;
                             }
-                            chart.options.plugins.tooltip.backgroundColor = tooltipBg;
-                            chart.options.plugins.tooltip.titleColor = tooltipText;
-                            chart.options.plugins.tooltip.bodyColor = tooltipText;
+                            chart.options.plugins.tooltip.titleColor = '#fff';
                             chart.update('none');
                         }
                     });
                 };
 
-                // 认证
                 const handleLogin = async () => {
                     if (!loginPassword.value) return;
                     isLoggingIn.value = true;
@@ -853,7 +1075,6 @@
                     mainChartInst?.destroy(); mainChartInst = null;
                 };
 
-                // 数据获取
                 const fetchData = async () => {
                     if (!token.value) return;
                     try {
@@ -886,96 +1107,52 @@
                     }, 3000);
                 };
 
-                // 搜索防抖
-                watch(searchQuery, debounce((val) => {
-                    debouncedSearch.value = val;
-                }, 300));
-                // 添加排序稳定化缓存
+                watch(searchQuery, debounce((val) => { debouncedSearch.value = val; }, 300));
+
                 const sortCache = ref(new Map());
                 const lastSortTime = ref(0);
-
                 const sortedPeers = computed(() => {
                     let list = peers.value.filter(p => {
                         if (debouncedSearch.value) {
                             const q = debouncedSearch.value.toLowerCase();
-                            const match = (p.alias || '').toLowerCase().includes(q) ||
+                            return (p.alias || '').toLowerCase().includes(q) ||
                                 p.allowed_ips.some(ip => ip.includes(q)) ||
                                 p.public_key.toLowerCase().includes(q);
-                            if (!match) return false;
                         }
-                        if (statusFilter.value === 'online' && !p.is_online) return false;
-                        if (statusFilter.value === 'offline' && p.is_online) return false;
-                        return true;
+                        return (statusFilter.value === 'all') ||
+                            (statusFilter.value === 'online' && p.is_online) ||
+                            (statusFilter.value === 'offline' && !p.is_online);
                     });
 
                     const now = Date.now();
-                    const shouldRecalculate = now - lastSortTime.value > 5000; // 每5秒才重新排序
+                    const shouldRecalculate = now - lastSortTime.value > 5000;
 
                     return list.sort((a, b) => {
                         let valA, valB;
-
                         if (sortKey.value === 'rate') {
-                            // 使用缓存的排序值
-                            const keyA = a.public_key;
-                            const keyB = b.public_key;
-                            const currentA = (a.rx_rate || 0) + (a.tx_rate || 0);
-                            const currentB = (b.rx_rate || 0) + (b.tx_rate || 0);
+                            const kA = a.public_key, kB = b.public_key;
+                            const curA = (a.rx_rate || 0) + (a.tx_rate || 0), curB = (b.rx_rate || 0) + (b.tx_rate || 0);
 
-                            if (shouldRecalculate || !sortCache.value.has(keyA)) {
-                                sortCache.value.set(keyA, currentA);
-                            } else {
-                                const cachedA = sortCache.value.get(keyA);
-                                // 只有变化超过20%或超过1Mbps时才更新缓存
-                                if (Math.abs(currentA - cachedA) > Math.max(0.2 * cachedA, 1)) {
-                                    sortCache.value.set(keyA, currentA);
-                                }
-                            }
+                            if (shouldRecalculate || !sortCache.value.has(kA) || Math.abs(curA - sortCache.value.get(kA)) > 1) sortCache.value.set(kA, curA);
+                            if (shouldRecalculate || !sortCache.value.has(kB) || Math.abs(curB - sortCache.value.get(kB)) > 1) sortCache.value.set(kB, curB);
 
-                            if (shouldRecalculate || !sortCache.value.has(keyB)) {
-                                sortCache.value.set(keyB, currentB);
-                            } else {
-                                const cachedB = sortCache.value.get(keyB);
-                                if (Math.abs(currentB - cachedB) > Math.max(0.2 * cachedB, 1)) {
-                                    sortCache.value.set(keyB, currentB);
-                                }
-                            }
-
-                            valA = sortCache.value.get(keyA) || 0;
-                            valB = sortCache.value.get(keyB) || 0;
-
+                            valA = sortCache.value.get(kA); valB = sortCache.value.get(kB);
                             if (shouldRecalculate) lastSortTime.value = now;
+                            if (Math.abs(valA - valB) < 0.5) return 0;
                         } else if (sortKey.value === 'transfer') {
                             valA = (a.receive_bytes || 0) + (a.transmit_bytes || 0);
                             valB = (b.receive_bytes || 0) + (b.transmit_bytes || 0);
                         } else {
-                            valA = a.alias || '';
-                            valB = b.alias || '';
+                            valA = a.alias || ''; valB = b.alias || '';
                         }
-
-                        // 添加稳定性:当差值很小时保持原顺序
-                        if (sortKey.value === 'rate' && Math.abs(valA - valB) < 0.5) {
-                            return 0; // 差值小于0.5Mbps时视为相等
-                        }
-
                         return sortDesc.value ? (valA < valB ? 1 : -1) : (valA > valB ? 1 : -1);
                     });
                 });
 
-                // 图表辅助
-                const createGradient = (ctx, c1, c2) => {
-                    const gradient = ctx.createLinearGradient(0, 0, 0, 300);
-                    gradient.addColorStop(0, c1);
-                    gradient.addColorStop(1, c2);
-                    return gradient;
-                };
-
-                // 主图表逻辑
                 const fetchMainChart = async () => {
                     if (!token.value) return;
                     try {
-                        const res = await axios.get(`/api/chart/traffic?period=${mainChartPeriod.value}`, {
-                            headers: { Authorization: `Bearer ${token.value}` }
-                        });
+                        const res = await axios.get(`/api/chart/traffic?period=${mainChartPeriod.value}`, { headers: { Authorization: `Bearer ${token.value}` } });
                         renderMainChart(res.data);
                     } catch (e) { }
                 };
@@ -984,12 +1161,28 @@
                     const ctxEl = document.getElementById('mainChart');
                     if (!ctxEl) return;
 
+                    // 优化：根据时间范围调整显示格式
+                    let unit = 'minute';
+                    let displayFormat = 'HH:mm';
+
+                    if (mainChartPeriod.value === '24h') {
+                        unit = 'hour';
+                    } else if (mainChartPeriod.value === '7d') {
+                        unit = 'day';
+                        displayFormat = 'MM-dd';
+                    }
+
                     const labels = data.labels.map(t => t * 1000);
+                    const maxVal = Math.max(...data.tx, ...data.rx);
+                    const suggestedMax = maxVal > 0 ? maxVal * 1.1 : 1;
 
                     if (mainChartInst) {
                         mainChartInst.data.labels = labels;
                         mainChartInst.data.datasets[0].data = data.tx;
                         mainChartInst.data.datasets[1].data = data.rx;
+                        mainChartInst.options.scales.x.time.unit = unit;
+                        mainChartInst.options.scales.x.time.displayFormats[unit] = displayFormat;
+                        mainChartInst.options.scales.y.suggestedMax = suggestedMax;
                         mainChartInst.update('none');
                     } else {
                         const ctx = ctxEl.getContext('2d');
@@ -1000,55 +1193,75 @@
                                 datasets: [
                                     {
                                         label: '上传', data: data.tx, borderColor: '#3b82f6',
-                                        backgroundColor: createGradient(ctx, 'rgba(59, 130, 246, 0.2)', 'rgba(59, 130, 246, 0.0)'),
-                                        borderWidth: 2, fill: true, tension: 0.3
+                                        backgroundColor: createGradient(ctx, 'rgba(59, 130, 246, 0.15)', 'rgba(59, 130, 246, 0.0)'),
+                                        fill: true, normalized: true
                                     },
                                     {
                                         label: '下载', data: data.rx, borderColor: '#10b981',
-                                        backgroundColor: createGradient(ctx, 'rgba(16, 185, 129, 0.2)', 'rgba(16, 185, 129, 0.0)'),
-                                        borderWidth: 2, fill: true, tension: 0.3
+                                        backgroundColor: createGradient(ctx, 'rgba(16, 185, 129, 0.15)', 'rgba(16, 185, 129, 0.0)'),
+                                        fill: true, normalized: true
                                     }
                                 ]
                             },
                             options: {
-                                interaction: { mode: 'index', intersect: false },
-                                plugins: { legend: { display: false } },
                                 scales: {
                                     x: {
-                                        type: 'time', time: { unit: 'minute', displayFormats: { minute: 'HH:mm' } },
-                                        grid: { display: false }, ticks: { maxTicksLimit: 6, color: isDark.value ? '#94a3b8' : '#64748b' }
+                                        type: 'time',
+                                        time: { unit: unit, displayFormats: { [unit]: displayFormat } },
+                                        grid: { display: false },
+                                        ticks: { maxTicksLimit: 8, autoSkip: true, maxRotation: 0, color: isDark.value ? '#94a3b8' : '#64748b' }
                                     },
-                                    y: {
-                                        grid: { color: isDark.value ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.05)', borderDash: [4, 4] },
-                                        ticks: { callback: v => v + ' M', maxTicksLimit: 5, color: isDark.value ? '#94a3b8' : '#64748b' },
-                                        beginAtZero: true
-                                    }
-                                }
+                                    y: { border: { display: false }, grid: { display: true, color: isDark.value ? 'rgba(255,255,255,0.03)' : 'rgba(0,0,0,0.03)' }, ticks: { callback: v => v + ' M', maxTicksLimit: 5, padding: 8, color: isDark.value ? '#94a3b8' : '#64748b' }, beginAtZero: true, suggestedMax: suggestedMax }
+                                },
+                                plugins: { legend: { display: false }, tooltip: { callbacks: { label: (c) => ` ${c.dataset.label}: ${c.parsed.y.toFixed(2)} Mbps` } } }
                             }
                         });
                     }
                 };
 
-                // 详情弹窗逻辑
-                const openDetail = (p) => { modalPeer.value = p; fetchDetailData(); };
+                const openDetail = (p) => {
+                    modalPeer.value = p;
+                    fetchDetailData();
+                    fetchAccessLogs(); // 获取历史日志
+                };
 
                 const fetchDetailData = async () => {
                     if (!modalPeer.value) return;
                     chartLoading.value = true;
                     try {
-                        const res = await axios.get(`/api/history/${modalPeer.value.public_key}?period=${historyPeriod.value}`, {
-                            headers: { Authorization: `Bearer ${token.value}` }
-                        });
+                        const res = await axios.get(`/api/history/${modalPeer.value.public_key}?period=${historyPeriod.value}`, { headers: { Authorization: `Bearer ${token.value}` } });
                         nextTick(() => renderDetailChart(res.data));
                     } catch { showToast('无法加载历史数据', 'error'); }
                     finally { chartLoading.value = false; }
+                };
+
+                const fetchAccessLogs = async () => {
+                    if (!modalPeer.value) return;
+                    logsLoading.value = true;
+                    accessLogs.value = [];
+                    try {
+                        const res = await axios.get(`/api/history/logs/${modalPeer.value.public_key}`, {
+                            headers: { Authorization: `Bearer ${token.value}` }
+                        });
+                        accessLogs.value = res.data.logs || [];
+
+                        // 触发 IP 解析
+                        accessLogs.value.forEach(log => {
+                            resolveIpLocation(log.endpoint);
+                        });
+
+                    } catch (e) {
+                        // showToast('加载日志失败', 'error');
+                    } finally {
+                        logsLoading.value = false;
+                        nextTick(() => lucide.createIcons());
+                    }
                 };
 
                 const renderDetailChart = (data) => {
                     const ctxEl = document.getElementById('detailChart');
                     if (!ctxEl) return;
                     const ctx = ctxEl.getContext('2d');
-
                     if (detailChartInst) detailChartInst.destroy();
 
                     detailChartInst = new Chart(ctx, {
@@ -1056,37 +1269,38 @@
                         data: {
                             labels: data.labels.map(t => t * 1000),
                             datasets: [{
-                                label: '下载 (Mbps)', data: data.rates.rx, borderColor: '#10b981',
+                                label: '下载', data: data.rates.rx, borderColor: '#10b981',
                                 backgroundColor: createGradient(ctx, 'rgba(16, 185, 129, 0.1)', 'rgba(16, 185, 129, 0)'),
-                                fill: true, tension: 0.4
+                                fill: true, pointBackgroundColor: '#10b981'
                             }, {
-                                label: '上传 (Mbps)', data: data.rates.tx, borderColor: '#3b82f6',
+                                label: '上传', data: data.rates.tx, borderColor: '#3b82f6',
                                 backgroundColor: createGradient(ctx, 'rgba(59, 130, 246, 0.1)', 'rgba(59, 130, 246, 0)'),
-                                fill: true, tension: 0.4
+                                fill: true, pointBackgroundColor: '#3b82f6'
                             }]
                         },
                         options: {
-                            plugins: { legend: { display: true, labels: { color: isDark.value ? '#cbd5e1' : '#475569' } } },
+                            animation: { duration: 800, easing: 'easeOutQuart' },
+                            plugins: {
+                                legend: { display: true, align: 'end', labels: { usePointStyle: true, boxWidth: 6, color: isDark.value ? '#cbd5e1' : '#475569' } },
+                                tooltip: { callbacks: { label: (c) => ` ${c.dataset.label}: ${c.parsed.y.toFixed(2)} Mbps` } }
+                            },
                             scales: {
-                                x: { type: 'time', grid: { display: false }, ticks: { color: isDark.value ? '#94a3b8' : '#64748b' } },
-                                y: { grid: { color: isDark.value ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.05)' }, ticks: { color: isDark.value ? '#94a3b8' : '#64748b' }, beginAtZero: true }
+                                x: { type: 'time', grid: { display: false }, ticks: { color: isDark.value ? '#94a3b8' : '#64748b', maxTicksLimit: 6 } },
+                                y: { border: { display: false }, grid: { color: isDark.value ? 'rgba(255,255,255,0.03)' : 'rgba(0,0,0,0.03)' }, ticks: { color: isDark.value ? '#94a3b8' : '#64748b', callback: v => v + ' Mbps' }, beginAtZero: true }
                             }
                         }
                     });
                 };
 
-                // 分析图表逻辑
                 const openAnalysis = async () => {
                     showAnalysis.value = true;
                     analysisLoading.value = true;
                     analysisData.value = null;
-
                     try {
                         const res = await axios.get('/api/analysis', { headers: { Authorization: `Bearer ${token.value}` } });
                         analysisData.value = res.data;
-                    } catch (e) {
-                        showToast('分析加载失败', 'error');
-                    } finally {
+                    } catch (e) { showToast('分析加载失败', 'error'); }
+                    finally {
                         analysisLoading.value = false;
                         await nextTick();
                         renderAnalysisCharts();
@@ -1096,23 +1310,18 @@
 
                 const renderAnalysisCharts = () => {
                     if (!analysisData.value) return;
-
                     const pieEl = document.getElementById('trafficPieChart');
                     const barEl = document.getElementById('activityBarChart');
-
                     if (pieChart) { pieChart.destroy(); pieChart = null; }
                     if (barChart) { barChart.destroy(); barChart = null; }
 
-                    const textColor = isDark.value ? '#cbd5e1' : '#475569';
+                    const textColor = isDark.value ? '#94a3b8' : '#64748b';
 
-                    // 渲染饼图
                     if (pieEl && analysisData.value.peers) {
                         const top = analysisData.value.peers.slice(0, 5);
                         const otherTotal = analysisData.value.peers.slice(5).reduce((acc, curr) => acc + (curr.total_rx + curr.total_tx), 0);
-
                         const labels = top.map(p => p.alias || p.public_key.slice(0, 6));
                         const data = top.map(p => p.total_rx + p.total_tx);
-
                         if (otherTotal > 0) { labels.push('其他'); data.push(otherTotal); }
 
                         pieChart = new Chart(pieEl.getContext('2d'), {
@@ -1121,45 +1330,48 @@
                                 labels: labels,
                                 datasets: [{
                                     data: data,
-                                    backgroundColor: ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#64748b'],
-                                    borderWidth: 0, hoverOffset: 15
+                                    backgroundColor: ['#3b82f6', '#10b981', '#f59e0b', '#6366f1', '#ec4899', '#94a3b8'],
+                                    borderColor: isDark.value ? '#1e293b' : '#fff', borderWidth: 2, hoverOffset: 10
                                 }]
                             },
                             options: {
-                                responsive: true, maintainAspectRatio: false, cutout: '65%',
+                                animation: { animateScale: true, animateRotate: true },
+                                responsive: true, maintainAspectRatio: false, cutout: '70%',
                                 plugins: {
-                                    legend: { position: 'right', labels: { color: textColor, boxWidth: 12, padding: 15 } },
+                                    legend: { position: 'right', labels: { usePointStyle: true, pointStyle: 'circle', color: textColor, padding: 15, font: { size: 11 } } },
                                     tooltip: { callbacks: { label: (c) => ` ${c.label}: ${fmtBytes(c.raw)}` } }
                                 }
                             }
                         });
                     }
 
-                    // 渲染柱状图
                     if (barEl && analysisData.value.hourly_profile) {
-                        barChart = new Chart(barEl.getContext('2d'), {
+                        const ctx = barEl.getContext('2d');
+                        const gradientBar = ctx.createLinearGradient(0, 0, 0, 300);
+                        gradientBar.addColorStop(0, '#3b82f6'); gradientBar.addColorStop(1, '#60a5fa');
+
+                        barChart = new Chart(ctx, {
                             type: 'bar',
                             data: {
                                 labels: analysisData.value.hourly_profile.map(h => h.hour + ':00'),
                                 datasets: [{
-                                    label: '活跃流量',
-                                    data: analysisData.value.hourly_profile.map(h => h.rx_sum + h.tx_sum),
-                                    backgroundColor: '#3b82f6', borderRadius: 4
+                                    label: '流量', data: analysisData.value.hourly_profile.map(h => h.rx_sum + h.tx_sum),
+                                    backgroundColor: gradientBar, borderRadius: 6, borderSkipped: false, barPercentage: 0.6
                                 }]
                             },
                             options: {
+                                animation: { duration: 1000 },
                                 responsive: true, maintainAspectRatio: false,
                                 scales: {
-                                    x: { grid: { display: false }, ticks: { color: textColor, maxTicksLimit: 8 } },
+                                    x: { grid: { display: false }, ticks: { color: textColor, maxTicksLimit: 8, font: { size: 10 } }, border: { display: false } },
                                     y: { display: false }
                                 },
-                                plugins: { legend: { display: false }, tooltip: { callbacks: { label: (c) => ` 流量: ${fmtBytes(c.raw)}` } } }
+                                plugins: { legend: { display: false }, tooltip: { callbacks: { label: (c) => ` 总流量: ${fmtBytes(c.raw)}` }, displayColors: false } }
                             }
                         });
                     }
                 };
 
-                // 工具函数
                 const refreshIcons = () => {
                     if (iconsTimer) clearTimeout(iconsTimer);
                     iconsTimer = setTimeout(() => lucide.createIcons(), 100);
@@ -1176,7 +1388,6 @@
                     navigator.clipboard.writeText(text).then(() => showToast(`${label} 已复制`));
                 };
 
-                // 别名编辑
                 const editing = ref(null);
                 const tempAlias = ref('');
                 const editAlias = (p) => { editing.value = p.public_key; tempAlias.value = p.alias || ''; };
@@ -1190,33 +1401,147 @@
                     editing.value = null;
                 };
 
-                const changeMainChartPeriod = () => {
-                    if (mainChartInst) { mainChartInst.destroy(); mainChartInst = null; }
-                    fetchMainChart();
+                // --- 管理功能逻辑 ---
+                const openAddModal = async () => {
+                    try {
+                        const res = await axios.get('/api/manage/configs', { headers: { Authorization: `Bearer ${token.value}` } });
+                        availableConfigs.value = res.data.configs;
+                        if (availableConfigs.value.length > 0) newPeer.config = availableConfigs.value[0];
+                        newPeer.name = '';
+                        newPeer.ip = '';
+                        showAddModal.value = true;
+                        suggestIP(); // 打开即获取
+                    } catch (e) { showToast('无法加载接口列表', 'error'); }
                 };
+
+                const suggestIP = async () => {
+                    if (!newPeer.config) return;
+                    ipLoading.value = true;
+                    try {
+                        const res = await axios.get(`/api/manage/suggest_ip?config=${newPeer.config}`, {
+                            headers: { Authorization: `Bearer ${token.value}` }
+                        });
+                        if (res.data.ip) {
+                            newPeer.ip = res.data.ip;
+                        }
+                    } catch (e) {
+                        showToast('无法获取可用IP', 'error');
+                    } finally {
+                        ipLoading.value = false;
+                    }
+                };
+
+                // --- 二维码更新逻辑 ---
+                watch(generatedConfigStr, () => {
+                    if (showConfigModal.value) {
+                        isQrUpdating.value = true;
+                        debouncedRenderQR();
+                    }
+                });
+
+                const renderQR = (text) => {
+                    const el = document.getElementById('qrcode');
+                    if (!el) return;
+                    el.innerHTML = '';
+                    if (!text.trim()) return;
+                    try {
+                        new QRCode(el, {
+                            text: text,
+                            width: 180,
+                            height: 180,
+                            correctLevel: QRCode.CorrectLevel.M
+                        });
+                    } catch (e) { console.error(e); }
+                    finally {
+                        isQrUpdating.value = false;
+                    }
+                };
+
+                const debouncedRenderQR = debounce(() => {
+                    renderQR(generatedConfigStr.value);
+                }, 500);
+
+                const createPeer = async () => {
+                    try {
+                        const res = await axios.post('/api/manage/peer', {
+                            config_file: newPeer.config,
+                            name: newPeer.name,
+                            allowed_ips: newPeer.ip
+                        }, { headers: { Authorization: `Bearer ${token.value}` } });
+
+                        if (res.data.status === 'ok') {
+                            showAddModal.value = false;
+                            showToast('客户端创建成功');
+                            fetchData();
+
+                            const conf = `[Interface]
+PrivateKey = ${res.data.private_key}
+Address = ${newPeer.ip.split('/')[0]}/32
+DNS = 1.1.1.1
+
+[Peer]
+PublicKey = ${res.data.server_public_key}
+PresharedKey = ${res.data.preshared_key}
+Endpoint = ${window.location.hostname}:${res.data.server_port}
+AllowedIPs = 0.0.0.0/0
+PersistentKeepalive = 25
+`;
+                            generatedConfigStr.value = conf; // 触发 watcher
+                            showConfigModal.value = true;
+
+                            // 初始强制渲染（不防抖）
+                            await nextTick();
+                            renderQR(conf);
+                        } else {
+                            showToast(res.data.error || '创建失败', 'error');
+                        }
+                    } catch (e) { showToast('请求失败', 'error'); }
+                };
+
+                // --- 删除逻辑 ---
+                const deletePeer = (p) => {
+                    peerToDelete.value = p;
+                    showDeleteModal.value = true;
+                };
+
+                const confirmDelete = async () => {
+                    if (!peerToDelete.value) return;
+                    deleteLoading.value = true;
+                    try {
+                        const configName = availableConfigs.value[0] || 'wg0';
+
+                        await axios.delete(`/api/manage/peer?config=${configName}&public_key=${encodeURIComponent(peerToDelete.value.public_key)}`,
+                            { headers: { Authorization: `Bearer ${token.value}` } }
+                        );
+
+                        showToast('客户端已删除');
+                        showDeleteModal.value = false;
+                        fetchData();
+                    } catch (e) {
+                        showToast('删除失败: ' + (e.response?.data?.error || '未知错误'), 'error');
+                    } finally {
+                        deleteLoading.value = false;
+                        peerToDelete.value = null;
+                    }
+                };
+
+                const downloadConfig = () => {
+                    const blob = new Blob([generatedConfigStr.value], { type: 'text/plain' });
+                    const url = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `wg-${newPeer.name}.conf`;
+                    a.click();
+                };
+
+                const changeMainChartPeriod = () => { if (mainChartInst) { mainChartInst.destroy(); mainChartInst = null; } fetchMainChart(); };
                 const changeHistoryPeriod = () => { fetchDetailData(); };
-
                 const formatLastSeen = (ts) => ts ? new Date(ts * 1000).toLocaleString() : '从不';
-
                 const getHealthClass = (s) => {
                     if (s >= 90) return 'bg-emerald-50 dark:bg-emerald-500/10 border-emerald-200 dark:border-emerald-500/20 text-emerald-600 dark:text-emerald-400';
                     if (s >= 60) return 'bg-yellow-50 dark:bg-yellow-500/10 border-yellow-200 dark:border-yellow-500/20 text-yellow-600 dark:text-yellow-400';
                     return 'bg-red-50 dark:bg-red-500/10 border-red-200 dark:border-red-500/20 text-red-600 dark:text-red-400';
                 };
-
-                // 生命周期
-                onMounted(() => {
-                    initTheme();
-                    if (token.value) initDashboard();
-                    refreshIcons();
-                });
-
-                onUnmounted(() => {
-                    if (pollTimer) clearInterval(pollTimer);
-                    [mainChartInst, detailChartInst, pieChart, barChart].forEach(c => c?.destroy());
-                });
-
-                // 计算属性
                 const totalRxRate = computed(() => peers.value.reduce((a, b) => a + (b.rx_rate || 0), 0));
                 const totalTxRate = computed(() => peers.value.reduce((a, b) => a + (b.tx_rate || 0), 0));
                 const onlineCount = computed(() => peers.value.filter(p => p.is_online).length);
@@ -1235,18 +1560,31 @@
                     else { sortKey.value = key; sortDesc.value = true; }
                 };
 
+                onMounted(() => {
+                    initTheme();
+                    if (token.value) initDashboard();
+                    refreshIcons();
+                });
+
+                onUnmounted(() => {
+                    if (pollTimer) clearInterval(pollTimer);
+                    [mainChartInst, detailChartInst, pieChart, barChart].forEach(c => c?.destroy());
+                });
+
                 return {
                     token, loginPassword, loginError, isLoggingIn, handleLogin, logout,
                     peers, meta, sysInfo, sortedPeers, totalRxRate, totalTxRate, onlineCount,
                     searchQuery, statusFilter, mainChartPeriod, changeMainChartPeriod,
                     modalPeer, historyPeriod, changeHistoryPeriod, openDetail, chartLoading,
-
                     showAnalysis, analysisLoading, openAnalysis, analysisData,
-
                     editing, tempAlias, editAlias, saveAlias,
                     toasts, autoRefresh, toggleAutoRefresh: () => autoRefresh.value = !autoRefresh.value,
                     sort, copyText, fmtRate, fmtBytes, getTrafficRatio, formatLastSeen, getHealthClass,
-                    isDark, toggleTheme
+                    isDark, toggleTheme,
+                    showAddModal, showConfigModal, availableConfigs, newPeer, generatedConfigStr, ipLoading, isQrUpdating,
+                    openAddModal, createPeer, deletePeer, downloadConfig, suggestIP,
+                    showDeleteModal, peerToDelete, deleteLoading, confirmDelete,
+                    accessLogs, logsLoading, fetchAccessLogs, getCountryCode
                 };
             }
         }).mount('#app');
