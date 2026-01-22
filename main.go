@@ -5,9 +5,11 @@ import (
 	"context"
 	"database/sql"
 	_ "embed"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -74,7 +76,7 @@ type RawSnapshot struct {
 type ProcessedLog struct {
 	Timestamp int64
 	PublicKey string
-	Endpoint  string // 新增：记录IP
+	Endpoint  string
 	RxBytes   int64
 	TxBytes   int64
 	RxRate    float64
@@ -154,12 +156,24 @@ type AnalysisReport struct {
 	HourlyProfile []ActivityPoint `json:"hourly_profile"`
 }
 
-// --- 新增：历史记录结构 ---
 type AccessLog struct {
 	Timestamp string `json:"timestamp"`
 	Endpoint  string `json:"endpoint"`
 	RxTotal   int64  `json:"rx_total"`
 	TxTotal   int64  `json:"tx_total"`
+}
+
+// --- SSE 结构 ---
+type SSEBroker struct {
+	Clients       map[chan string]bool
+	NewClients    chan chan string
+	ClosedClients chan chan string
+	Message       chan string
+}
+
+type DashboardUpdate struct {
+	Peers  []PeerData `json:"peers"`
+	System SystemInfo `json:"system"`
 }
 
 // ================= 全局变量 =================
@@ -168,7 +182,45 @@ var (
 	latestPeersCache sync.Map
 	publicKeyRegex   = regexp.MustCompile(`^[A-Za-z0-9+/]{43}=$`)
 	logger           *log.Logger
+	sseBroker        *SSEBroker
 )
+
+// ================= SSE Broker 逻辑 =================
+
+func NewSSEBroker() *SSEBroker {
+	b := &SSEBroker{
+		Clients:       make(map[chan string]bool),
+		NewClients:    make(chan chan string),
+		ClosedClients: make(chan chan string),
+		Message:       make(chan string),
+	}
+	go b.listen()
+	return b
+}
+
+func (b *SSEBroker) listen() {
+	for {
+		select {
+		case s := <-b.NewClients:
+			b.Clients[s] = true
+			logger.Printf("SSE 客户端已连接. 当前总数: %d", len(b.Clients))
+		case s := <-b.ClosedClients:
+			delete(b.Clients, s)
+			close(s)
+			logger.Printf("SSE 客户端已断开. 当前总数: %d", len(b.Clients))
+		case msg := <-b.Message:
+			for s := range b.Clients {
+				select {
+				case s <- msg:
+				default:
+					// 避免阻塞 Broker
+				}
+			}
+		}
+	}
+}
+
+// ================= 主程序 =================
 
 func main() {
 	logger = log.New(os.Stdout, "[WG-Monitor] ", log.LstdFlags|log.Lshortfile)
@@ -193,6 +245,9 @@ func main() {
 			logger.Printf("数据库关闭失败: %v", err)
 		}
 	}()
+
+	// 初始化 SSE Broker
+	sseBroker = NewSSEBroker()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -237,7 +292,7 @@ func main() {
 	r.Use(gin.Recovery())
 
 	r.Static("/static", "./static")
-	
+
 	r.GET("/", func(c *gin.Context) {
 		c.Header("Content-Type", "text/html; charset=utf-8")
 		c.String(http.StatusOK, indexHtml)
@@ -265,9 +320,12 @@ func main() {
 		authorized := api.Group("/")
 		authorized.Use(authMiddleware())
 		{
+			// SSE 接口
+			authorized.GET("/stream", streamHandler)
+
 			authorized.GET("/peers", getPeers)
 			authorized.GET("/history/:publickey", getPeerHistory)
-			authorized.GET("/history/logs/:publickey", getPeerAccessLogs) // 新增接口
+			authorized.GET("/history/logs/:publickey", getPeerAccessLogs)
 			authorized.GET("/chart/traffic", getTrafficChartData)
 			authorized.GET("/system", getSystemStatus)
 			authorized.POST("/alias", setAlias)
@@ -348,6 +406,10 @@ func extractToken(c *gin.Context) string {
 	if len(bearerToken) > 7 && strings.ToUpper(bearerToken[0:7]) == "BEARER " {
 		return bearerToken[7:]
 	}
+	// 支持 SSE 的 URL 参数鉴权
+	if token := c.Query("token"); token != "" {
+		return token
+	}
 	return ""
 }
 
@@ -412,6 +474,28 @@ func loginHandler(c *gin.Context) {
 	})
 }
 
+func streamHandler(c *gin.Context) {
+	clientChan := make(chan string)
+	sseBroker.NewClients <- clientChan
+
+	defer func() {
+		sseBroker.ClosedClients <- clientChan
+	}()
+
+	c.Writer.Header().Set("Content-Type", "text/event-stream")
+	c.Writer.Header().Set("Cache-Control", "no-cache")
+	c.Writer.Header().Set("Connection", "keep-alive")
+	c.Writer.Header().Set("Transfer-Encoding", "chunked")
+
+	c.Stream(func(w io.Writer) bool {
+		if msg, ok := <-clientChan; ok {
+			c.SSEvent("message", msg)
+			return true
+		}
+		return false
+	})
+}
+
 // ================= 数据库逻辑 =================
 
 func initDB() error {
@@ -434,7 +518,6 @@ func initDB() error {
 		db.Exec(pragma)
 	}
 
-	// 新增 endpoint 字段
 	schema := `
     CREATE TABLE IF NOT EXISTS traffic_history (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -459,7 +542,6 @@ func initDB() error {
 		return err
 	}
 
-	// 自动迁移：检查是否存在 endpoint 列，不存在则添加
 	checkCol := "SELECT endpoint FROM traffic_history LIMIT 1"
 	if _, err := db.Query(checkCol); err != nil {
 		logger.Println("检测到旧版数据库，正在升级表结构 (添加 endpoint)...")
@@ -470,6 +552,124 @@ func initDB() error {
 	}
 
 	return nil
+}
+
+// ================= 数据收集共享逻辑 =================
+
+func collectSystemInfo() SystemInfo {
+	var sys SystemInfo
+	if percent, err := cpu.Percent(0, false); err == nil && len(percent) > 0 {
+		sys.CPUPercent = percent[0]
+	}
+	if v, err := mem.VirtualMemory(); err == nil {
+		sys.MemPercent = v.UsedPercent
+	}
+	if h, err := host.Info(); err == nil {
+		sys.Uptime = h.Uptime
+		sys.HostName = h.Hostname
+		sys.OS = h.Platform + " " + h.PlatformVersion
+	}
+	if temps, err := host.SensorsTemperatures(); err == nil {
+		for _, t := range temps {
+			if t.Temperature > sys.CPUTemp {
+				sys.CPUTemp = t.Temperature
+			}
+		}
+	}
+	return sys
+}
+
+func collectPeersData() ([]PeerData, string, int, error) {
+	client, err := wgctrl.New()
+	if err != nil {
+		return nil, "", 0, err
+	}
+	defer client.Close()
+
+	device, err := client.Device(WGInterface)
+	if err != nil {
+		return nil, "", 0, err
+	}
+
+	aliasMap := make(map[string]string)
+	rows, err := db.Query("SELECT public_key, alias FROM peer_aliases")
+	if err == nil && rows != nil {
+		defer rows.Close()
+		for rows.Next() {
+			var pk, a string
+			rows.Scan(&pk, &a)
+			aliasMap[pk] = a
+		}
+	}
+
+	var peers []PeerData
+	for _, p := range device.Peers {
+		pk := p.PublicKey.String()
+		var ips []string
+		for _, ip := range p.AllowedIPs {
+			ips = append(ips, ip.String())
+		}
+		ep := "未连接"
+		if p.Endpoint != nil {
+			ep = p.Endpoint.String()
+		}
+
+		var rxRate, txRate float64
+		var isOnline bool
+		if val, ok := latestPeersCache.Load(pk); ok {
+			entry := val.(cacheEntry)
+			rxRate, txRate, isOnline = entry.data.RxRate, entry.data.TxRate, entry.data.IsOnline
+		} else {
+			isOnline = !p.LastHandshakeTime.IsZero() && time.Since(p.LastHandshakeTime) < OnlineThreshold
+		}
+
+		peers = append(peers, PeerData{
+			PublicKey:     pk,
+			AllowedIPs:    ips,
+			Endpoint:      ep,
+			LastHandshake: p.LastHandshakeTime,
+			ReceiveBytes:  p.ReceiveBytes,
+			TransmitBytes: p.TransmitBytes,
+			Alias:         aliasMap[pk],
+			RxRate:        rxRate,
+			TxRate:        txRate,
+			IsOnline:      isOnline,
+		})
+	}
+
+	sort.Slice(peers, func(i, j int) bool {
+		if peers[i].IsOnline != peers[j].IsOnline {
+			return peers[i].IsOnline
+		}
+		if len(peers[i].AllowedIPs) > 0 && len(peers[j].AllowedIPs) > 0 {
+			return peers[i].AllowedIPs[0] < peers[j].AllowedIPs[0]
+		}
+		return false
+	})
+
+	return peers, device.Name, device.ListenPort, nil
+}
+
+func broadcastUpdates() {
+	if len(sseBroker.Clients) == 0 {
+		return
+	}
+
+	peers, _, _, err := collectPeersData()
+	if err != nil {
+		logger.Printf("广播数据收集失败: %v", err)
+		return
+	}
+
+	update := DashboardUpdate{
+		Peers:  peers,
+		System: collectSystemInfo(),
+	}
+
+	jsonData, err := json.Marshal(update)
+	if err == nil {
+		sseBroker.Message <- string(jsonData)
+	}
 }
 
 // ================= 深度分析逻辑 =================
@@ -932,7 +1132,6 @@ func startProcessor(ctx context.Context, in <-chan RawSnapshot, out chan<- []Pro
 				state.LastTx = p.TransmitBytes
 				state.LastSeen = snap.Timestamp
 
-				// 获取 Endpoint IP
 				epStr := ""
 				if p.Endpoint != nil {
 					epStr = p.Endpoint.IP.String()
@@ -952,6 +1151,10 @@ func startProcessor(ctx context.Context, in <-chan RawSnapshot, out chan<- []Pro
 				buffer = append(buffer, logEntry)
 				latestPeersCache.Store(pk, cacheEntry{data: logEntry, timestamp: time.Now()})
 			}
+
+			// 数据处理完毕，触发 SSE 广播
+			go broadcastUpdates()
+
 			if len(buffer) >= BatchSize {
 				flush()
 			}
@@ -1079,101 +1282,20 @@ func getRangeParams(period string) (int64, int64) {
 }
 
 func getSystemStatus(c *gin.Context) {
-	var sys SystemInfo
-	if percent, err := cpu.Percent(0, false); err == nil && len(percent) > 0 {
-		sys.CPUPercent = percent[0]
-	}
-	if v, err := mem.VirtualMemory(); err == nil {
-		sys.MemPercent = v.UsedPercent
-	}
-	if h, err := host.Info(); err == nil {
-		sys.Uptime = h.Uptime
-		sys.HostName = h.Hostname
-		sys.OS = h.Platform + " " + h.PlatformVersion
-	}
-	if temps, err := host.SensorsTemperatures(); err == nil {
-		for _, t := range temps {
-			if t.Temperature > sys.CPUTemp {
-				sys.CPUTemp = t.Temperature
-			}
-		}
-	}
+	sys := collectSystemInfo()
 	c.JSON(http.StatusOK, sys)
 }
 
 func getPeers(c *gin.Context) {
-	client, err := wgctrl.New()
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "无法连接 WireGuard"})
-		return
-	}
-	defer client.Close()
-
-	device, err := client.Device(WGInterface)
+	peers, name, port, err := collectPeersData()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "无法获取设备信息"})
 		return
 	}
 
-	aliasMap := make(map[string]string)
-	rows, err := db.Query("SELECT public_key, alias FROM peer_aliases")
-	if err == nil && rows != nil {
-		defer rows.Close()
-		for rows.Next() {
-			var pk, a string
-			rows.Scan(&pk, &a)
-			aliasMap[pk] = a
-		}
-	}
-
-	var peers []PeerData
-	for _, p := range device.Peers {
-		pk := p.PublicKey.String()
-		var ips []string
-		for _, ip := range p.AllowedIPs {
-			ips = append(ips, ip.String())
-		}
-		ep := "未连接"
-		if p.Endpoint != nil {
-			ep = p.Endpoint.String()
-		}
-
-		var rxRate, txRate float64
-		var isOnline bool
-		if val, ok := latestPeersCache.Load(pk); ok {
-			entry := val.(cacheEntry)
-			rxRate, txRate, isOnline = entry.data.RxRate, entry.data.TxRate, entry.data.IsOnline
-		} else {
-			isOnline = !p.LastHandshakeTime.IsZero() && time.Since(p.LastHandshakeTime) < OnlineThreshold
-		}
-
-		peers = append(peers, PeerData{
-			PublicKey:     pk,
-			AllowedIPs:    ips,
-			Endpoint:      ep,
-			LastHandshake: p.LastHandshakeTime,
-			ReceiveBytes:  p.ReceiveBytes,
-			TransmitBytes: p.TransmitBytes,
-			Alias:         aliasMap[pk],
-			RxRate:        rxRate,
-			TxRate:        txRate,
-			IsOnline:      isOnline,
-		})
-	}
-
-	sort.Slice(peers, func(i, j int) bool {
-		if peers[i].IsOnline != peers[j].IsOnline {
-			return peers[i].IsOnline
-		}
-		if len(peers[i].AllowedIPs) > 0 && len(peers[j].AllowedIPs) > 0 {
-			return peers[i].AllowedIPs[0] < peers[j].AllowedIPs[0]
-		}
-		return false
-	})
-
 	c.JSON(http.StatusOK, gin.H{
-		"interface": device.Name,
-		"port":      device.ListenPort,
+		"interface": name,
+		"port":      port,
 		"peers":     peers,
 	})
 }
@@ -1224,17 +1346,15 @@ func getPeerHistory(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"labels": tsList, "rates": gin.H{"rx": rxList, "tx": txList}})
 }
 
-// 新增：获取历史记录
 func getPeerAccessLogs(c *gin.Context) {
 	pk := c.Param("publickey")
-	// 查询最近 30 天，按 (Endpoint, Hour) 分组，取最大的时间戳
 	query := `
         SELECT MAX(timestamp), endpoint, MAX(rx_bytes), MAX(tx_bytes)
         FROM traffic_history 
         WHERE peer_public_key = ? 
           AND endpoint != '' 
           AND timestamp > ?
-        GROUP BY endpoint, timestamp / 3600
+        GROUP BY endpoint
         ORDER BY timestamp DESC 
         LIMIT 100
     `

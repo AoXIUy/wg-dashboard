@@ -273,8 +273,9 @@
                                 class="text-blue-500">Pro</span></h1>
                         <div
                             class="flex items-center gap-2 text-[11px] text-slate-500 dark:text-slate-400 font-mono mt-0.5">
-                            <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 status-pulse"></span>
+                            <span :class="['w-1.5 h-1.5 rounded-full', isConnected ? 'bg-emerald-500 status-pulse' : 'bg-red-500']"></span>
                             {{ meta.interface }}:{{ meta.port }}
+                            <span v-if="!isConnected" class="text-red-500 ml-1">(连接中断)</span>
                         </div>
                     </div>
                 </div>
@@ -302,8 +303,9 @@
                     </button>
 
                     <button @click="toggleAutoRefresh"
-                        :class="['p-2.5 rounded-xl transition-colors', autoRefresh ? 'text-emerald-500 bg-emerald-50 dark:bg-emerald-500/10' : 'text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800']">
-                        <i data-lucide="refresh-cw" :class="['w-5 h-5', autoRefresh ? 'animate-spin' : '']"></i>
+                        :class="['p-2.5 rounded-xl transition-colors', autoRefresh ? 'text-emerald-500 bg-emerald-50 dark:bg-emerald-500/10' : 'text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800']"
+                        title="实时连接开关">
+                        <i data-lucide="zap" :class="['w-5 h-5', autoRefresh ? 'fill-current' : '']"></i>
                     </button>
 
                     <button @click="openAnalysis"
@@ -341,7 +343,7 @@
                         </div>
                         <select v-model="mainChartPeriod" @change="changeMainChartPeriod"
                             class="ml-2 bg-slate-100 dark:bg-slate-800 border-none rounded-lg text-slate-600 dark:text-slate-300 text-xs py-1.5 pl-3 pr-8 cursor-pointer focus:ring-2 focus:ring-blue-500 outline-none">
-                            <option value="realtime">实时</option>
+                            <option value="realtime">实时 (Live)</option>
                             <option value="1h">1小时</option>
                             <option value="24h">24小时</option>
                             <option value="7d">7天</option>
@@ -892,7 +894,7 @@
                 </div>
             </div>
         </Transition>
-    </div>
+        </div>
 
     <script>
         const { createApp, ref, reactive, onMounted, onUnmounted, computed, nextTick, watch } = Vue;
@@ -947,6 +949,7 @@
                 const autoRefresh = ref(true);
                 const toasts = ref([]);
                 const isDark = ref(false);
+                const isConnected = ref(false);
 
                 const sortKey = ref('rate');
                 const sortDesc = ref(true);
@@ -977,6 +980,9 @@
                 const accessLogs = ref([]);
                 const logsLoading = ref(false);
 
+                // SSE EventSource
+                const es = ref(null);
+
                 // --- IP 地理位置缓存 ---
                 const ipCache = reactive({});
                 const getIp = (endpoint) => endpoint ? endpoint.split(':')[0].replace('[', '').replace(']', '') : '';
@@ -985,7 +991,7 @@
                 const resolveIpLocation = async (endpoint) => {
                     const ip = getIp(endpoint);
                     if (!ip || isPrivateIp(ip) || ipCache.hasOwnProperty(ip)) return;
-                    ipCache[ip] = ''; // 标记为已请求
+                    ipCache[ip] = '';
                     try {
                         const res = await fetch(`http://ip-api.com/json/${ip}?fields=status,countryCode`);
                         const data = await res.json();
@@ -999,7 +1005,6 @@
                 let detailChartInst = null;
                 let pieChart = null;
                 let barChart = null;
-                let pollTimer = null;
                 let iconsTimer = null;
 
                 const createGradient = (ctx, c1, c2) => {
@@ -1069,42 +1074,109 @@
                 };
 
                 const logout = () => {
+                    if (es.value) es.value.close();
                     token.value = '';
                     localStorage.removeItem('wg_token');
-                    if (pollTimer) clearInterval(pollTimer);
+                    isConnected.value = false;
                     mainChartInst?.destroy(); mainChartInst = null;
                 };
 
-                const fetchData = async () => {
+                // --- SSE 核心逻辑 ---
+                const initSSE = () => {
+                    if (es.value) es.value.close();
                     if (!token.value) return;
-                    try {
-                        const [pRes, sRes] = await Promise.all([
-                            axios.get('/api/peers', { headers: { Authorization: `Bearer ${token.value}` } }),
-                            axios.get('/api/system', { headers: { Authorization: `Bearer ${token.value}` } })
-                        ]);
-                        peers.value = pRes.data.peers || [];
-                        meta.value = pRes.data;
-                        sysInfo.value = sRes.data;
-                        refreshIcons();
-                    } catch (e) {
-                        if (e.response?.status === 401) logout();
+
+                    // 使用 token 参数连接 SSE
+                    es.value = new EventSource(`/api/stream?token=${encodeURIComponent(token.value)}`);
+
+                    es.value.onopen = () => {
+                        console.log("SSE Connected");
+                        isConnected.value = true;
+                        loginError.value = '';
+                    };
+
+                    es.value.onmessage = (event) => {
+                        try {
+                            const data = JSON.parse(event.data);
+                            // 更新核心数据
+                            peers.value = data.peers || [];
+                            sysInfo.value = data.system || { cpu_percent: 0, mem_percent: 0 };
+                            
+                            // 实时更新图表
+                            updateRealtimeChart(data.peers);
+
+                            // 刷新图标
+                            refreshIcons();
+                        } catch (e) {
+                            console.error('SSE Parse Error', e);
+                        }
+                    };
+
+                    es.value.onerror = (err) => {
+                        console.error("SSE Error", err);
+                        isConnected.value = false;
+                        es.value.close();
+                        // 3秒重连
+                        if (autoRefresh.value) {
+                            setTimeout(() => {
+                                if (token.value) initSSE();
+                            }, 3000);
+                        }
+                    };
+                };
+
+                const toggleAutoRefresh = () => {
+                    autoRefresh.value = !autoRefresh.value;
+                    if (autoRefresh.value) {
+                        if (!isConnected.value) initSSE();
+                        showToast('实时连接已开启');
+                    } else {
+                        if (es.value) es.value.close();
+                        isConnected.value = false;
+                        showToast('实时连接已暂停', 'error');
                     }
                 };
 
-                const initDashboard = () => {
-                    fetchData();
-                    fetchMainChart();
-                    startPolling();
+                // 实时更新图表（追加数据点，不重绘整个图表）
+                const updateRealtimeChart = (currentPeers) => {
+                    if (mainChartPeriod.value !== 'realtime' || !mainChartInst) return;
+
+                    const tx = currentPeers.reduce((a, b) => a + (b.tx_rate || 0), 0);
+                    const rx = currentPeers.reduce((a, b) => a + (b.rx_rate || 0), 0);
+                    const now = Date.now();
+
+                    // 追加新数据点
+                    mainChartInst.data.labels.push(now);
+                    mainChartInst.data.datasets[0].data.push(tx);
+                    mainChartInst.data.datasets[1].data.push(rx);
+
+                    // 保持窗口大小（约10分钟数据，2秒一个点 = 300点）
+                    const maxPoints = 300;
+                    if (mainChartInst.data.labels.length > maxPoints) {
+                        mainChartInst.data.labels.shift();
+                        mainChartInst.data.datasets[0].data.shift();
+                        mainChartInst.data.datasets[1].data.shift();
+                    }
+
+                    mainChartInst.update('none'); // 高性能更新模式
                 };
 
-                const startPolling = () => {
-                    if (pollTimer) clearInterval(pollTimer);
-                    pollTimer = setInterval(() => {
-                        if (autoRefresh.value) {
-                            fetchData();
-                            if (mainChartPeriod.value === 'realtime') fetchMainChart();
-                        }
-                    }, 3000);
+                const initDashboard = () => {
+                    // 1. 获取元数据
+                    axios.get('/api/peers', { headers: { Authorization: `Bearer ${token.value}` } })
+                        .then(res => {
+                            meta.value = res.data;
+                            peers.value = res.data.peers || []; // 初始渲染一次
+                        })
+                        .catch(e => {
+                            if (e.response?.status === 401) logout();
+                        });
+                    
+                    // 2. 初始化图表历史数据
+                    fetchMainChart();
+
+                    // 3. 启动 SSE
+                    initSSE();
                 };
 
                 watch(searchQuery, debounce((val) => { debouncedSearch.value = val; }, 300));
@@ -1161,7 +1233,6 @@
                     const ctxEl = document.getElementById('mainChart');
                     if (!ctxEl) return;
 
-                    // 优化：根据时间范围调整显示格式
                     let unit = 'minute';
                     let displayFormat = 'HH:mm';
 
@@ -1177,13 +1248,14 @@
                     const suggestedMax = maxVal > 0 ? maxVal * 1.1 : 1;
 
                     if (mainChartInst) {
+                        // 如果是切换周期，重置数据
                         mainChartInst.data.labels = labels;
                         mainChartInst.data.datasets[0].data = data.tx;
                         mainChartInst.data.datasets[1].data = data.rx;
                         mainChartInst.options.scales.x.time.unit = unit;
                         mainChartInst.options.scales.x.time.displayFormats[unit] = displayFormat;
                         mainChartInst.options.scales.y.suggestedMax = suggestedMax;
-                        mainChartInst.update('none');
+                        mainChartInst.update();
                     } else {
                         const ctx = ctxEl.getContext('2d');
                         mainChartInst = new Chart(ctx, {
@@ -1194,16 +1266,17 @@
                                     {
                                         label: '上传', data: data.tx, borderColor: '#3b82f6',
                                         backgroundColor: createGradient(ctx, 'rgba(59, 130, 246, 0.15)', 'rgba(59, 130, 246, 0.0)'),
-                                        fill: true, normalized: true
+                                        fill: true, normalized: true, tension: 0.4
                                     },
                                     {
                                         label: '下载', data: data.rx, borderColor: '#10b981',
                                         backgroundColor: createGradient(ctx, 'rgba(16, 185, 129, 0.15)', 'rgba(16, 185, 129, 0.0)'),
-                                        fill: true, normalized: true
+                                        fill: true, normalized: true, tension: 0.4
                                     }
                                 ]
                             },
                             options: {
+                                animation: false, // 禁用初始动画，由SSE驱动
                                 scales: {
                                     x: {
                                         type: 'time',
@@ -1222,7 +1295,7 @@
                 const openDetail = (p) => {
                     modalPeer.value = p;
                     fetchDetailData();
-                    fetchAccessLogs(); // 获取历史日志
+                    fetchAccessLogs();
                 };
 
                 const fetchDetailData = async () => {
@@ -1244,14 +1317,10 @@
                             headers: { Authorization: `Bearer ${token.value}` }
                         });
                         accessLogs.value = res.data.logs || [];
-
-                        // 触发 IP 解析
                         accessLogs.value.forEach(log => {
                             resolveIpLocation(log.endpoint);
                         });
-
                     } catch (e) {
-                        // showToast('加载日志失败', 'error');
                     } finally {
                         logsLoading.value = false;
                         nextTick(() => lucide.createIcons());
@@ -1396,7 +1465,7 @@
                     try {
                         await axios.post('/api/alias', { public_key: pk, alias: tempAlias.value }, { headers: { Authorization: `Bearer ${token.value}` } });
                         showToast('别名已更新');
-                        fetchData();
+                        // SSE会自动更新列表，无需手动fetch
                     } catch { showToast('保存失败', 'error'); }
                     editing.value = null;
                 };
@@ -1410,7 +1479,7 @@
                         newPeer.name = '';
                         newPeer.ip = '';
                         showAddModal.value = true;
-                        suggestIP(); // 打开即获取
+                        suggestIP();
                     } catch (e) { showToast('无法加载接口列表', 'error'); }
                 };
 
@@ -1472,8 +1541,7 @@
                         if (res.data.status === 'ok') {
                             showAddModal.value = false;
                             showToast('客户端创建成功');
-                            fetchData();
-
+                            
                             const conf = `[Interface]
 PrivateKey = ${res.data.private_key}
 Address = ${newPeer.ip.split('/')[0]}/32
@@ -1486,10 +1554,8 @@ Endpoint = ${window.location.hostname}:${res.data.server_port}
 AllowedIPs = 0.0.0.0/0
 PersistentKeepalive = 25
 `;
-                            generatedConfigStr.value = conf; // 触发 watcher
+                            generatedConfigStr.value = conf;
                             showConfigModal.value = true;
-
-                            // 初始强制渲染（不防抖）
                             await nextTick();
                             renderQR(conf);
                         } else {
@@ -1498,7 +1564,6 @@ PersistentKeepalive = 25
                     } catch (e) { showToast('请求失败', 'error'); }
                 };
 
-                // --- 删除逻辑 ---
                 const deletePeer = (p) => {
                     peerToDelete.value = p;
                     showDeleteModal.value = true;
@@ -1516,7 +1581,7 @@ PersistentKeepalive = 25
 
                         showToast('客户端已删除');
                         showDeleteModal.value = false;
-                        fetchData();
+                        // SSE会自动更新，无需fetch
                     } catch (e) {
                         showToast('删除失败: ' + (e.response?.data?.error || '未知错误'), 'error');
                     } finally {
@@ -1534,7 +1599,10 @@ PersistentKeepalive = 25
                     a.click();
                 };
 
-                const changeMainChartPeriod = () => { if (mainChartInst) { mainChartInst.destroy(); mainChartInst = null; } fetchMainChart(); };
+                const changeMainChartPeriod = () => { 
+                    if (mainChartInst) { mainChartInst.destroy(); mainChartInst = null; } 
+                    fetchMainChart(); 
+                };
                 const changeHistoryPeriod = () => { fetchDetailData(); };
                 const formatLastSeen = (ts) => ts ? new Date(ts * 1000).toLocaleString() : '从不';
                 const getHealthClass = (s) => {
@@ -1567,7 +1635,7 @@ PersistentKeepalive = 25
                 });
 
                 onUnmounted(() => {
-                    if (pollTimer) clearInterval(pollTimer);
+                    if (es.value) es.value.close();
                     [mainChartInst, detailChartInst, pieChart, barChart].forEach(c => c?.destroy());
                 });
 
@@ -1578,7 +1646,7 @@ PersistentKeepalive = 25
                     modalPeer, historyPeriod, changeHistoryPeriod, openDetail, chartLoading,
                     showAnalysis, analysisLoading, openAnalysis, analysisData,
                     editing, tempAlias, editAlias, saveAlias,
-                    toasts, autoRefresh, toggleAutoRefresh: () => autoRefresh.value = !autoRefresh.value,
+                    toasts, autoRefresh, toggleAutoRefresh, isConnected,
                     sort, copyText, fmtRate, fmtBytes, getTrafficRatio, formatLastSeen, getHealthClass,
                     isDark, toggleTheme,
                     showAddModal, showConfigModal, availableConfigs, newPeer, generatedConfigStr, ipLoading, isQrUpdating,
