@@ -593,7 +593,7 @@
                             </div>
                         </div>
                         <button type="submit"
-                            class="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 rounded-xl transition-all shadow-lg shadow-blue-600/20 mt-2">
+                            class="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-3.5 rounded-xl transition-all shadow-lg shadow-blue-600/20 mt-2">
                             创建并应用
                         </button>
                     </form>
@@ -806,7 +806,7 @@
                         <div
                             class="p-3 border-b border-slate-200 dark:border-white/5 bg-slate-100/50 dark:bg-slate-900/50 flex items-center justify-between sticky top-0">
                             <h3 class="font-bold text-slate-700 dark:text-slate-300 text-sm flex items-center gap-2">
-                                <i data-lucide="history" class="w-4 h-4 text-blue-500"></i> 连接历史 (Top 100)
+                                <i data-lucide="history" class="w-4 h-4 text-blue-500"></i> 连接历史
                             </h3>
                             <button @click="fetchAccessLogs"
                                 class="p-1 hover:bg-slate-200 dark:hover:bg-slate-700 rounded text-slate-400">
@@ -1245,7 +1245,7 @@
 
                     const labels = data.labels.map(t => t * 1000);
                     const maxVal = Math.max(...data.tx, ...data.rx);
-                    const suggestedMax = maxVal > 0 ? maxVal * 1.1 : 1;
+                    const suggestedMax = Math.max(maxVal * 1.1, 10);
 
                     if (mainChartInst) {
                         // 如果是切换周期，重置数据
@@ -1355,7 +1355,7 @@
                             },
                             scales: {
                                 x: { type: 'time', grid: { display: false }, ticks: { color: isDark.value ? '#94a3b8' : '#64748b', maxTicksLimit: 6 } },
-                                y: { border: { display: false }, grid: { color: isDark.value ? 'rgba(255,255,255,0.03)' : 'rgba(0,0,0,0.03)' }, ticks: { color: isDark.value ? '#94a3b8' : '#64748b', callback: v => v + ' Mbps' }, beginAtZero: true }
+                                y: { border: { display: false }, grid: { color: isDark.value ? 'rgba(255,255,255,0.03)' : 'rgba(0,0,0,0.03)' }, ticks: { color: isDark.value ? '#94a3b8' : '#64748b', callback: v => v + ' Mbps' }, beginAtZero: true, suggestedMax: 10 }
                             }
                         }
                     });

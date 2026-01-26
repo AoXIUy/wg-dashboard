@@ -1348,15 +1348,14 @@ func getPeerHistory(c *gin.Context) {
 
 func getPeerAccessLogs(c *gin.Context) {
 	pk := c.Param("publickey")
+	// 查询过去 30 天的所有记录，按时间正序排列以便计算差值
 	query := `
-        SELECT MAX(timestamp), endpoint, MAX(rx_bytes), MAX(tx_bytes)
+        SELECT timestamp, endpoint, rx_bytes, tx_bytes
         FROM traffic_history 
         WHERE peer_public_key = ? 
           AND endpoint != '' 
           AND timestamp > ?
-        GROUP BY endpoint
-        ORDER BY timestamp DESC 
-        LIMIT 100
+        ORDER BY timestamp ASC
     `
 
 	since := time.Now().AddDate(0, 0, -30).Unix()
@@ -1368,19 +1367,77 @@ func getPeerAccessLogs(c *gin.Context) {
 	}
 	defer rows.Close()
 
-	var logs []AccessLog
+	type epStat struct {
+		lastSeen int64
+		rx       int64
+		tx       int64
+	}
+	stats := make(map[string]*epStat)
+
+	var prevRx, prevTx int64 = -1, -1
+
 	for rows.Next() {
 		var ts int64
 		var ep string
 		var rx, tx int64
-		if err := rows.Scan(&ts, &ep, &rx, &tx); err == nil {
-			logs = append(logs, AccessLog{
-				Timestamp: time.Unix(ts, 0).Format("2006-01-02 15:04"),
-				Endpoint:  ep,
-				RxTotal:   rx,
-				TxTotal:   tx,
-			})
+		if err := rows.Scan(&ts, &ep, &rx, &tx); err != nil {
+			continue
 		}
+
+		// 第一条记录，仅用于初始化前值，不计算增量
+		if prevRx == -1 {
+			prevRx = rx
+			prevTx = tx
+			if _, ok := stats[ep]; !ok {
+				// 记录存在但暂时无增量
+				stats[ep] = &epStat{lastSeen: ts, rx: 0, tx: 0}
+			}
+			continue
+		}
+
+		deltaRx := rx - prevRx
+		deltaTx := tx - prevTx
+
+		// 假如当前值小于前值，说明 WireGuard 接口可能已重启（计数器归零），
+		// 此时将当前值视为新增量
+		if deltaRx < 0 {
+			deltaRx = rx
+		}
+		if deltaTx < 0 {
+			deltaTx = tx
+		}
+
+		if _, ok := stats[ep]; !ok {
+			stats[ep] = &epStat{}
+		}
+		stats[ep].lastSeen = ts
+		stats[ep].rx += deltaRx
+		stats[ep].tx += deltaTx
+
+		prevRx = rx
+		prevTx = tx
+	}
+
+	var logs []AccessLog
+	for ep, s := range stats {
+		// 转换时间戳为前端需要的格式
+		tStr := time.Unix(s.lastSeen, 0).Format("2006-01-02 15:04")
+		logs = append(logs, AccessLog{
+			Timestamp: tStr,
+			Endpoint:  ep,
+			RxTotal:   s.rx,
+			TxTotal:   s.tx,
+		})
+	}
+
+	// 按时间倒序排列 (最新的在前)
+	sort.Slice(logs, func(i, j int) bool {
+		return logs[i].Timestamp > logs[j].Timestamp
+	})
+
+	// 限制返回数量，防止前端渲染过慢
+	if len(logs) > 100 {
+		logs = logs[:100]
 	}
 
 	if logs == nil {
