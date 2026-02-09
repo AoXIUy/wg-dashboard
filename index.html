@@ -1,3 +1,7 @@
+{
+type: uploaded file
+fileName: aoxiuy/wg-dashboard/wg-dashboard-c34a87407149d2e350a26a8d67c7e0d2feae7fc8/index.html
+fullContent:
 <!DOCTYPE html>
 <html lang="zh" class="dark">
 
@@ -593,7 +597,7 @@
                             </div>
                         </div>
                         <button type="submit"
-                            class="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 rounded-xl transition-all shadow-lg shadow-blue-600/20 mt-2">
+                            class="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-3.5 rounded-xl transition-all shadow-lg shadow-blue-600/20 mt-2">
                             创建并应用
                         </button>
                     </form>
@@ -806,7 +810,7 @@
                         <div
                             class="p-3 border-b border-slate-200 dark:border-white/5 bg-slate-100/50 dark:bg-slate-900/50 flex items-center justify-between sticky top-0">
                             <h3 class="font-bold text-slate-700 dark:text-slate-300 text-sm flex items-center gap-2">
-                                <i data-lucide="history" class="w-4 h-4 text-blue-500"></i> 连接历史 (Top 100)
+                                <i data-lucide="history" class="w-4 h-4 text-blue-500"></i> 连接历史
                             </h3>
                             <button @click="fetchAccessLogs"
                                 class="p-1 hover:bg-slate-200 dark:hover:bg-slate-700 rounded text-slate-400">
@@ -838,9 +842,9 @@
                                         <td class="p-3">
                                             <div class="flex items-center gap-2">
                                                 <img v-if="getCountryCode(log.endpoint)"
-                                                    :src="`https://flagcdn.com/w20/${getCountryCode(log.endpoint).toLowerCase()}.png`"
+                                                    :src="`/static/flags/${getCountryCode(log.endpoint).toLowerCase()}.png`"
                                                     class="w-5 h-auto rounded shadow-sm object-cover"
-                                                    :title="getCountryCode(log.endpoint)">
+                                                    :title="getGeoTitle(log.endpoint)">
                                                 <span class="font-bold font-mono">{{ log.endpoint }}</span>
                                             </div>
                                         </td>
@@ -991,15 +995,32 @@
                 const resolveIpLocation = async (endpoint) => {
                     const ip = getIp(endpoint);
                     if (!ip || isPrivateIp(ip) || ipCache.hasOwnProperty(ip)) return;
-                    ipCache[ip] = '';
+                    
+                    // 设置临时状态避免重复请求
+                    ipCache[ip] = { loading: true };
+                    
                     try {
-                        const res = await fetch(`http://ip-api.com/json/${ip}?fields=status,countryCode`);
-                        const data = await res.json();
-                        if (data.status === 'success') ipCache[ip] = data.countryCode;
-                    } catch (e) { }
+                        const res = await axios.get(`/api/geoip?ip=${ip}`, { headers: { Authorization: `Bearer ${token.value}` } });
+                        ipCache[ip] = res.data;
+                    } catch (e) {
+                        delete ipCache[ip];
+                    }
                 };
 
-                const getCountryCode = (endpoint) => ipCache[getIp(endpoint)];
+                const getCountryCode = (endpoint) => {
+                    const data = ipCache[getIp(endpoint)];
+                    return (data && !data.loading) ? data.country_code : '';
+                };
+
+                const getGeoTitle = (endpoint) => {
+                    const data = ipCache[getIp(endpoint)];
+                    if (!data || data.loading) return endpoint;
+                    let parts = [];
+                    if (data.country_code) parts.push(data.country_code);
+                    if (data.city) parts.push(data.city);
+                    if (data.asn) parts.push(`AS${data.asn_number} ${data.asn}`);
+                    return parts.join(' - ') || endpoint;
+                };
 
                 let mainChartInst = null;
                 let detailChartInst = null;
@@ -1245,7 +1266,7 @@
 
                     const labels = data.labels.map(t => t * 1000);
                     const maxVal = Math.max(...data.tx, ...data.rx);
-                    const suggestedMax = maxVal > 0 ? maxVal * 1.1 : 1;
+                    const suggestedMax = Math.max(maxVal * 1.1, 10);
 
                     if (mainChartInst) {
                         // 如果是切换周期，重置数据
@@ -1355,7 +1376,7 @@
                             },
                             scales: {
                                 x: { type: 'time', grid: { display: false }, ticks: { color: isDark.value ? '#94a3b8' : '#64748b', maxTicksLimit: 6 } },
-                                y: { border: { display: false }, grid: { color: isDark.value ? 'rgba(255,255,255,0.03)' : 'rgba(0,0,0,0.03)' }, ticks: { color: isDark.value ? '#94a3b8' : '#64748b', callback: v => v + ' Mbps' }, beginAtZero: true }
+                                y: { border: { display: false }, grid: { color: isDark.value ? 'rgba(255,255,255,0.03)' : 'rgba(0,0,0,0.03)' }, ticks: { color: isDark.value ? '#94a3b8' : '#64748b', callback: v => v + ' Mbps' }, beginAtZero: true, suggestedMax: 10 }
                             }
                         }
                     });
@@ -1652,7 +1673,7 @@ PersistentKeepalive = 25
                     showAddModal, showConfigModal, availableConfigs, newPeer, generatedConfigStr, ipLoading, isQrUpdating,
                     openAddModal, createPeer, deletePeer, downloadConfig, suggestIP,
                     showDeleteModal, peerToDelete, deleteLoading, confirmDelete,
-                    accessLogs, logsLoading, fetchAccessLogs, getCountryCode
+                    accessLogs, logsLoading, fetchAccessLogs, getCountryCode, getGeoTitle
                 };
             }
         }).mount('#app');
@@ -1660,3 +1681,5 @@ PersistentKeepalive = 25
 </body>
 
 </html>
+
+}

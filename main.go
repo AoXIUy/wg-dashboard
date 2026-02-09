@@ -1,3 +1,7 @@
+{
+type: uploaded file
+fileName: aoxiuy/wg-dashboard/wg-dashboard-c34a87407149d2e350a26a8d67c7e0d2feae7fc8/main.go
+fullContent:
 package main
 
 import (
@@ -27,6 +31,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/oschwald/geoip2-golang"
 	"github.com/shirou/gopsutil/v3/cpu"
 	"github.com/shirou/gopsutil/v3/host"
 	"github.com/shirou/gopsutil/v3/mem"
@@ -64,6 +69,8 @@ var (
 	Retention     int
 	AdminPassword string
 	JWTSecret     string
+	GeoCityPath   string
+	GeoASNPath    string
 )
 
 // ================= 数据结构 =================
@@ -183,6 +190,8 @@ var (
 	publicKeyRegex   = regexp.MustCompile(`^[A-Za-z0-9+/]{43}=$`)
 	logger           *log.Logger
 	sseBroker        *SSEBroker
+	geoCity          *geoip2.Reader
+	geoAsn           *geoip2.Reader
 )
 
 // ================= SSE Broker 逻辑 =================
@@ -231,10 +240,43 @@ func main() {
 	flag.IntVar(&Retention, "days", 30, "数据保留天数")
 	flag.StringVar(&AdminPassword, "password", "admin123", "仪表盘访问密码")
 	flag.StringVar(&JWTSecret, "secret", "change_this_secret_in_prod", "JWT 签名密钥")
+	flag.StringVar(&GeoCityPath, "geo-city", "./GeoLite2-City.mmdb", "GeoLite2 City 数据库路径")
+	flag.StringVar(&GeoASNPath, "geo-asn", "./GeoLite2-ASN.mmdb", "GeoLite2 ASN 数据库路径")
 	flag.Parse()
 
 	if os.Geteuid() != 0 {
 		logger.Println("警告: 未以 Root 权限运行，无法管理 WireGuard 配置，仅能监控。")
+	}
+
+	// 初始化 GeoIP
+	var err error
+	if _, err := os.Stat(GeoCityPath); err == nil {
+		geoCity, err = geoip2.Open(GeoCityPath)
+		if err != nil {
+			logger.Printf("GeoIP City 加载失败: %v", err)
+		} else {
+			logger.Println("GeoIP City 数据库已加载")
+		}
+	} else {
+		logger.Printf("GeoIP City 数据库不存在: %s (将禁用地理位置功能)", GeoCityPath)
+	}
+
+	if _, err := os.Stat(GeoASNPath); err == nil {
+		geoAsn, err = geoip2.Open(GeoASNPath)
+		if err != nil {
+			logger.Printf("GeoIP ASN 加载失败: %v", err)
+		} else {
+			logger.Println("GeoIP ASN 数据库已加载")
+		}
+	} else {
+		logger.Printf("GeoIP ASN 数据库不存在: %s (将禁用 ASN 功能)", GeoASNPath)
+	}
+
+	if geoCity != nil {
+		defer geoCity.Close()
+	}
+	if geoAsn != nil {
+		defer geoAsn.Close()
 	}
 
 	if err := initDB(); err != nil {
@@ -292,6 +334,8 @@ func main() {
 	r.Use(gin.Recovery())
 
 	r.Static("/static", "./static")
+	// 专门为旗帜图标添加静态路由，假设用户将图标放在 static/flags 目录下
+	r.Static("/static/flags", "./static/flags")
 
 	r.GET("/", func(c *gin.Context) {
 		c.Header("Content-Type", "text/html; charset=utf-8")
@@ -329,6 +373,9 @@ func main() {
 			authorized.GET("/chart/traffic", getTrafficChartData)
 			authorized.GET("/system", getSystemStatus)
 			authorized.POST("/alias", setAlias)
+			
+			// 新增 GeoIP 接口
+			authorized.GET("/geoip", getGeoIPInfo)
 
 			authorized.GET("/analysis", func(c *gin.Context) {
 				daysStr := c.DefaultQuery("days", "7")
@@ -364,6 +411,7 @@ func main() {
 		logger.Printf("WireGuard Monitor & Manager 启动成功")
 		logger.Printf("接口: %s | 端口: %s", WGInterface, ServerPort)
 		logger.Printf("数据库: %s", DBPath)
+		logger.Printf("GeoIP City: %s", GeoCityPath)
 		logger.Printf("==============================================")
 
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -494,6 +542,45 @@ func streamHandler(c *gin.Context) {
 		}
 		return false
 	})
+}
+
+// ================= GeoIP 逻辑 =================
+
+func getGeoIPInfo(c *gin.Context) {
+	ipStr := c.Query("ip")
+	if ipStr == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "missing ip"})
+		return
+	}
+
+	ip := net.ParseIP(ipStr)
+	if ip == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid ip"})
+		return
+	}
+
+	resp := gin.H{}
+	
+	if geoCity != nil {
+		if record, err := geoCity.City(ip); err == nil {
+			resp["country_code"] = record.Country.IsoCode
+			// 优先使用中文名称，如果没有则使用英文
+			if name, ok := record.City.Names["zh-CN"]; ok && name != "" {
+				resp["city"] = name
+			} else {
+				resp["city"] = record.City.Names["en"]
+			}
+		}
+	}
+
+	if geoAsn != nil {
+		if record, err := geoAsn.ASN(ip); err == nil {
+			resp["asn"] = record.AutonomousSystemOrganization
+			resp["asn_number"] = record.AutonomousSystemNumber
+		}
+	}
+
+	c.JSON(http.StatusOK, resp)
 }
 
 // ================= 数据库逻辑 =================
@@ -1348,15 +1435,14 @@ func getPeerHistory(c *gin.Context) {
 
 func getPeerAccessLogs(c *gin.Context) {
 	pk := c.Param("publickey")
+	// 查询过去 30 天的所有记录，按时间正序排列以便计算差值
 	query := `
-        SELECT MAX(timestamp), endpoint, MAX(rx_bytes), MAX(tx_bytes)
+        SELECT timestamp, endpoint, rx_bytes, tx_bytes
         FROM traffic_history 
         WHERE peer_public_key = ? 
           AND endpoint != '' 
           AND timestamp > ?
-        GROUP BY endpoint
-        ORDER BY timestamp DESC 
-        LIMIT 100
+        ORDER BY timestamp ASC
     `
 
 	since := time.Now().AddDate(0, 0, -30).Unix()
@@ -1368,19 +1454,77 @@ func getPeerAccessLogs(c *gin.Context) {
 	}
 	defer rows.Close()
 
-	var logs []AccessLog
+	type epStat struct {
+		lastSeen int64
+		rx       int64
+		tx       int64
+	}
+	stats := make(map[string]*epStat)
+
+	var prevRx, prevTx int64 = -1, -1
+
 	for rows.Next() {
 		var ts int64
 		var ep string
 		var rx, tx int64
-		if err := rows.Scan(&ts, &ep, &rx, &tx); err == nil {
-			logs = append(logs, AccessLog{
-				Timestamp: time.Unix(ts, 0).Format("2006-01-02 15:04"),
-				Endpoint:  ep,
-				RxTotal:   rx,
-				TxTotal:   tx,
-			})
+		if err := rows.Scan(&ts, &ep, &rx, &tx); err != nil {
+			continue
 		}
+
+		// 第一条记录，仅用于初始化前值，不计算增量
+		if prevRx == -1 {
+			prevRx = rx
+			prevTx = tx
+			if _, ok := stats[ep]; !ok {
+				// 记录存在但暂时无增量
+				stats[ep] = &epStat{lastSeen: ts, rx: 0, tx: 0}
+			}
+			continue
+		}
+
+		deltaRx := rx - prevRx
+		deltaTx := tx - prevTx
+
+		// 假如当前值小于前值，说明 WireGuard 接口可能已重启（计数器归零），
+		// 此时将当前值视为新增量
+		if deltaRx < 0 {
+			deltaRx = rx
+		}
+		if deltaTx < 0 {
+			deltaTx = tx
+		}
+
+		if _, ok := stats[ep]; !ok {
+			stats[ep] = &epStat{}
+		}
+		stats[ep].lastSeen = ts
+		stats[ep].rx += deltaRx
+		stats[ep].tx += deltaTx
+
+		prevRx = rx
+		prevTx = tx
+	}
+
+	var logs []AccessLog
+	for ep, s := range stats {
+		// 转换时间戳为前端需要的格式
+		tStr := time.Unix(s.lastSeen, 0).Format("2006-01-02 15:04")
+		logs = append(logs, AccessLog{
+			Timestamp: tStr,
+			Endpoint:  ep,
+			RxTotal:   s.rx,
+			TxTotal:   s.tx,
+		})
+	}
+
+	// 按时间倒序排列 (最新的在前)
+	sort.Slice(logs, func(i, j int) bool {
+		return logs[i].Timestamp > logs[j].Timestamp
+	})
+
+	// 限制返回数量，防止前端渲染过慢
+	if len(logs) > 100 {
+		logs = logs[:100]
 	}
 
 	if logs == nil {
