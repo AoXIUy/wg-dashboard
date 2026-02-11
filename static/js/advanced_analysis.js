@@ -4,86 +4,86 @@ window.AdvancedApp = {
     network: null,
     heatmapChart: null,
 
-    // ================= World Map (Leaflet) =================
-    initMap(elementId, peerData) {
+    // ================= Globe.gl (3D Earth) =================
+    initGlobe(elementId, peerData) {
         if (this.map) {
-            this.map.remove();
+            // Globe.gl integrated into Three.js scene, minimal cleanup needed if overwriting container
+            // But we can stop animation loop if accessible.
+            // For now, simpler to just clear container and rebuild.
             this.map = null;
         }
 
         const container = document.getElementById(elementId);
         if (!container) return;
+        container.innerHTML = ''; // Clear Leaflet or previous Globe
 
-        // Dark/Midnight theme tiles
-        const tiles = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
-            subdomains: 'abcd',
-            maxZoom: 19
-        });
+        const globe = Globe()
+            .globeImageUrl('//unpkg.com/three-globe/example/img/earth-night.jpg')
+            .backgroundImageUrl('//unpkg.com/three-globe/example/img/night-sky.png')
+            .atmosphereColor('#3a228a')
+            .atmosphereAltitude(0.25)
+            .width(container.offsetWidth)
+            .height(container.offsetHeight)
+            (container);
 
-        this.map = L.map(elementId, {
-            center: [20, 0],
-            zoom: 2,
-            layers: [tiles]
-        });
+        // --- Data Processing for Globe ---
+        // 1. Peer Points (Cylinders)
+        // 2. Rings (Online status)
+        // 3. Arcs (Server <-> Client)
 
-        const bounds = [];
-        const groups = {};
+        // Server location (approximate or fixed center)
+        // Ideally we should have server lat/lon. For now, let's assume server is at [0,0] or iterate to find "server" in peerData if it exists
+        // Actually peerData usually contains only peers. Let's assume server is visually "everywhere" or just connect peers to each other?
+        // Let's visualize Peers as the primary entities.
 
-        // Group peers by location coordinates
-        peerData.forEach(p => {
-            if (p.lat && p.lon) {
-                const key = `${p.lat},${p.lon}`;
-                if (!groups[key]) groups[key] = [];
-                groups[key].push(p);
+        const pointsData = peerData.filter(p => p.lat && p.lon).map(p => ({
+            lat: parseFloat(p.lat),
+            lng: parseFloat(p.lon),
+            size: 0.5 + (p.rx_rate + p.tx_rate) / 10, // Size based on traffic
+            color: p.is_online ? '#10b981' : '#64748b',
+            name: p.alias || 'Client',
+            ip: p.endpoint,
+            is_online: p.is_online
+        }));
+
+        globe
+            .pointsData(pointsData)
+            .pointAltitude(0.01)
+            .pointColor('color')
+            .pointRadius('size')
+            .pointResolution(16)
+            .pointLabel(d => `
+                <div style="background: rgba(15,23,42,0.9); color: #e2e8f0; padding: 8px 12px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.1); font-family: sans-serif; font-size: 12px;">
+                    <strong style="color: ${d.color}; font-size: 14px;">${d.name}</strong><br>
+                    <span style="opacity: 0.7;">${d.ip}</span><br>
+                    <span style="display:inline-block; width:6px; height:6px; background:${d.color}; border-radius:50%; margin-right:4px;"></span>
+                    ${d.is_online ? 'Online' : 'Offline'}
+                </div>
+            `);
+
+        // Rings for Online Peers
+        const ringsData = pointsData.filter(p => p.is_online);
+        globe
+            .ringsData(ringsData)
+            .ringColor(() => '#10b981')
+            .ringMaxRadius(5)
+            .ringPropagationSpeed(2)
+            .ringRepeatPeriod(1000);
+
+        // Auto-rotate
+        globe.controls().autoRotate = true;
+        globe.controls().autoRotateSpeed = 0.5;
+        globe.pointOfView({ altitude: 2.5 }); // Zoom out a bit
+
+        // Handle resize
+        window.addEventListener('resize', () => {
+            if (container) {
+                globe.width(container.offsetWidth);
+                globe.height(container.offsetHeight);
             }
         });
 
-        // Render markers with offset for overlapping peers
-        Object.keys(groups).forEach(key => {
-            const list = groups[key];
-            const baseLat = parseFloat(list[0].lat);
-            const baseLon = parseFloat(list[0].lon);
-
-            list.forEach((p, index) => {
-                let lat = baseLat;
-                let lon = baseLon;
-
-                // Apply circular layout offset if multiple peers share the same location
-                // 0.05 degrees is roughly 5.5km, ensuring distinct visibility
-                if (list.length > 1) {
-                    const angle = (index / list.length) * Math.PI * 2;
-                    const radius = 0.05; // ~5km separation
-                    lat = baseLat + (Math.cos(angle) * radius);
-                    lon = baseLon + (Math.sin(angle) * radius);
-                }
-
-                const marker = L.circleMarker([lat, lon], {
-                    radius: 6,
-                    fillColor: p.is_online ? '#10b981' : '#64748b',
-                    color: '#fff',
-                    weight: 2,
-                    opacity: 1,
-                    fillOpacity: 0.9
-                }).addTo(this.map);
-
-                const tooltipContent = `
-                    <div style="min-width: 150px">
-                        <b>${p.alias || 'Unknown'}</b><br>
-                        <span style="font-size: 0.8em; color: #666">IP: ${p.endpoint}</span><br>
-                        <span style="font-size: 0.8em; color: #666">Location: ${p.city}, ${p.country_code}</span><br>
-                        <span style="font-size: 0.8em; color: ${p.is_online ? '#10b981' : '#94a3b8'}">● ${p.is_online ? 'Online' : 'Offline'}</span>
-                    </div>
-                `;
-                marker.bindPopup(tooltipContent);
-
-                bounds.push([lat, lon]);
-            });
-        });
-
-        if (bounds.length > 0) {
-            this.map.fitBounds(bounds, { padding: [50, 50] });
-        }
+        this.map = globe;
     },
 
     // ================= Network Topology (Vis.js) =================
