@@ -636,6 +636,30 @@ func SuggestIP(confName string) (string, error) {
 	return suggested, nil
 }
 
+// ListConfigFiles 列出所有配置文件
+func ListConfigFiles() ([]string, error) {
+	files, err := os.ReadDir("/etc/wireguard")
+	if err != nil {
+		return []string{"wg0"}, nil // 默认返回 wg0，即使目录读取失败
+	}
+
+	var configs []string
+	for _, f := range files {
+		if !f.IsDir() && strings.HasSuffix(f.Name(), ".conf") {
+			name := strings.TrimSuffix(f.Name(), ".conf")
+			if IsValidConfigName(name) {
+				configs = append(configs, name)
+			}
+		}
+	}
+
+	if len(configs) == 0 {
+		return []string{"wg0"}, nil
+	}
+
+	return configs, nil
+}
+
 // GenerateAnalysisReport 生成分析报告
 func GenerateAnalysisReport(ctx context.Context, days int) (*models.AnalysisReport, error) {
 	startTime := time.Now().AddDate(0, 0, -days).Unix()

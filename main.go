@@ -136,7 +136,16 @@ func main() {
 			auth.GET("/history/logs/:publickey", handlers.GetPeerLogs)
 			auth.DELETE("/peer/:publickey", handlers.DeletePeer)
 			auth.POST("/peer/:publickey/alias", handlers.UpdateAlias)
-			auth.GET("/geoip", handlers.GetIPInfo)
+	auth.GET("/geoip", handlers.GetIPInfo)
+
+			// 管理接口
+			manage := auth.Group("/manage")
+			{
+				manage.GET("/configs", handlers.ListConfigs)
+				manage.GET("/suggest_ip", handlers.SuggestIP)
+				manage.POST("/peer", handlers.AddPeer)
+				manage.DELETE("/peer", handlers.DeletePeerManage)
+			}
 		}
 	}
 
