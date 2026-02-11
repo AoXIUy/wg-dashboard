@@ -770,12 +770,19 @@ func streamHandler(c *gin.Context) {
 	c.Writer.Header().Set("X-Accel-Buffering", "no") // 禁用 Nginx 缓冲
 
 	c.Stream(func(w io.Writer) bool {
+		ticker := time.NewTicker(15 * time.Second)
+		defer ticker.Stop()
+
 		select {
 		case msg, ok := <-clientChan:
 			if !ok {
 				return false
 			}
 			c.SSEvent("message", msg)
+			return true
+		case <-ticker.C:
+			// 发送心跳注释保持连接
+			c.Writer.Write([]byte(": keepalive\n\n"))
 			return true
 		case <-c.Request.Context().Done():
 			return false
@@ -1519,8 +1526,8 @@ func startHTTPServer() *http.Server {
 	srv := &http.Server{
 		Addr:         ServerPort,
 		Handler:      r,
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 15 * time.Second,
+		ReadTimeout:  0, // 禁用读取超时以支持 SSE
+		WriteTimeout: 0, // 禁用写入超时以支持 SSE
 		IdleTimeout:  60 * time.Second,
 	}
 
