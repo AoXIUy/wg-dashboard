@@ -339,6 +339,11 @@ func main() {
 		c.String(http.StatusOK, indexHtml)
 	})
 
+	// 🔧 FIX: 添加 favicon.ico 处理，防止 404
+	r.GET("/favicon.ico", func(c *gin.Context) {
+		c.File("./static/favicon.ico")
+	})
+
 	api := r.Group("/api")
 	{
 		api.POST("/login", loginHandler)
