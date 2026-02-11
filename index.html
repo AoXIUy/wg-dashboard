@@ -731,7 +731,7 @@
                     </div>
 
                     <div
-                        class="p-0 overflow-y-auto custom-scrollbar flex-1 bg-slate-50/30 dark:bg-slate-900/20 relative">
+                        class="p-0 overflow-y-auto custom-scrollbar flex-1 bg-slate-50/30 dark:bg-slate-900/20 relative flex flex-col">
                         <div v-if="analysisLoading"
                             class="absolute inset-0 flex flex-col items-center justify-center z-10 bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm">
                             <div
@@ -831,7 +831,7 @@
                         </div>
 
                         <div v-show="analysisTab==='topology'"
-                            class="relative w-full h-full min-h-[600px] flex overflow-hidden bg-slate-50 dark:bg-[#0b1121]">
+                            class="relative w-full flex-1 flex overflow-hidden bg-slate-50 dark:bg-[#0b1121]">
 
                             <div
                                 class="absolute inset-0 pointer-events-none opacity-30 bg-[radial-gradient(#cbd5e1_1px,transparent_1px)] dark:bg-[radial-gradient(#1e293b_1px,transparent_1px)] [background-size:20px_20px]">
@@ -1828,6 +1828,11 @@
                     const container = document.getElementById('networkTopology');
                     if (!container) return;
 
+                    if (networkInstance) {
+                        networkInstance.destroy();
+                        networkInstance = null;
+                    }
+
                     const nodes = [
                         {
                             id: 'server',
@@ -2258,6 +2263,7 @@ PersistentKeepalive = 25
                 onUnmounted(() => {
                     if (es.value) es.value.close();
                     [mainChartInst, detailChartInst, pieChart, barChart].forEach(c => c?.destroy());
+                    if (networkInstance) networkInstance.destroy();
                 });
 
                 return {
