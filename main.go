@@ -1,4 +1,4 @@
-package main
+﻿package main
 
 import (
 	"bytes"
@@ -1782,7 +1782,7 @@ func initRedis() {
 		redisEnabled = true
 	}
 }
-// ================= 地图与高级分析接�?=================
+// ================= 地图与高级分析接�?=================
 
 func getMapData(c *gin.Context) {
 	peers, _, _, err := collectPeersData()
@@ -1805,7 +1805,7 @@ func getMapData(c *gin.Context) {
 	var data []PeerGeo
 
 	for _, p := range peers {
-		if p.Endpoint == "" || p.Endpoint == "未连�? {
+		if p.Endpoint == "" || p.Endpoint == "未连�? {
 			continue
 		}
 
