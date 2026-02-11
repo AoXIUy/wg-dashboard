@@ -145,13 +145,19 @@ type AddPeerRequest struct {
 
 // --- 分析结构 ---
 type PeerAnalysis struct {
-	PublicKey    string  `json:"public_key"`
-	Alias        string  `json:"alias"`
-	TotalRx      int64   `json:"total_rx"`
-	TotalTx      int64   `json:"total_tx"`
-	Uptime       float64 `json:"uptime_percent"`
-	HealthScore  int     `json:"health_score"`
-	LastSeenTime int64   `json:"last_seen_time"`
+	PublicKey       string   `json:"public_key"`
+	Alias           string   `json:"alias"`
+	TotalRx         int64    `json:"total_rx"`
+	TotalTx         int64    `json:"total_tx"`
+	Uptime          float64  `json:"uptime_percent"`
+	HealthScore     int      `json:"health_score"`
+	LastSeenTime    int64    `json:"last_seen_time"`
+	AllowedIPs      []string `json:"allowed_ips"`
+	Endpoint        string   `json:"endpoint"`
+	City            string   `json:"city"`
+	CountryCode     string   `json:"country_code"`
+	Latency         string   `json:"latency"`
+	LatestHandshake int64    `json:"latest_handshake"`
 }
 
 type ActivityPoint struct {
@@ -1980,6 +1986,24 @@ func generateAnalysisReport(ctx context.Context, days int) (*AnalysisReport, err
 		aliasCache.Refresh(ctx)
 	}
 
+	// 1. 获取实时 WireGuard 设备状态
+	var livePeers map[string]wgtypes.Peer
+	client, err := wgctrl.New()
+	if err == nil {
+		defer client.Close()
+		device, err := client.Device(WGInterface)
+		if err == nil {
+			livePeers = make(map[string]wgtypes.Peer)
+			for _, p := range device.Peers {
+				livePeers[p.PublicKey.String()] = p
+			}
+		} else {
+			logger.Printf("分析引擎: 无法获取接口 %s 信息: %v", WGInterface, err)
+		}
+	} else {
+		logger.Printf("分析引擎: 无法连接 WG 控制器: %v", err)
+	}
+
 	q := `
 		SELECT peer_public_key, COUNT(*), SUM(is_online), SUM(rx_rate), SUM(tx_rate), MAX(timestamp) 
 		FROM traffic_history 
@@ -2021,14 +2045,70 @@ func generateAnalysisReport(ctx context.Context, days int) (*AnalysisReport, err
 
 		alias, _ := aliasCache.Get(pk)
 
+		// 填充扩展信息
+		var allowedIPs []string
+		var endpointStr string
+		var latestHandshake int64
+		var city, countryCode string
+
+		// 优先从实时状态获取
+		if lp, ok := livePeers[pk]; ok {
+			for _, ip := range lp.AllowedIPs {
+				allowedIPs = append(allowedIPs, ip.String())
+			}
+			if lp.Endpoint != nil {
+				endpointStr = lp.Endpoint.String()
+			}
+			latestHandshake = lp.LastHandshakeTime.Unix()
+		}
+
+		// 如果没有实时 Endpoint (如离线)，尝试查找最近的访问日志
+		if endpointStr == "" {
+			var lastEp string
+			db.QueryRowContext(ctx, "SELECT endpoint FROM traffic_history WHERE peer_public_key = ? AND endpoint != '' ORDER BY timestamp DESC LIMIT 1", pk).Scan(&lastEp)
+			endpointStr = lastEp
+		}
+
+		// GeoIP 解析
+		if endpointStr != "" {
+			host, _, _ := net.SplitHostPort(endpointStr)
+			// 如果 split 失败（比如只有 IP 没有端口），尝试直接用
+			if host == "" {
+				host = endpointStr
+			}
+			
+			ip := net.ParseIP(host)
+			if ip != nil && !ip.IsPrivate() && !ip.IsLoopback() {
+				if geoCity != nil {
+					if record, err := geoCity.City(ip); err == nil {
+						if record.City.Names["zh-CN"] != "" {
+							city = record.City.Names["zh-CN"]
+						} else {
+							city = record.City.Names["en"]
+						}
+						countryCode = record.Country.IsoCode
+					}
+				}
+			}
+		}
+
+		latency := latencyCache.Get(pk)
+
+		// 填充基础信息
 		report.Peers = append(report.Peers, PeerAnalysis{
-			PublicKey:    pk,
-			Alias:        alias,
-			TotalRx:      estRx,
-			TotalTx:      estTx,
-			Uptime:       uptime,
-			HealthScore:  score,
-			LastSeenTime: lastSeen,
+			PublicKey:       pk,
+			Alias:           alias,
+			TotalRx:         estRx,
+			TotalTx:         estTx,
+			Uptime:          uptime,
+			HealthScore:     score,
+			LastSeenTime:    lastSeen,
+			AllowedIPs:      allowedIPs,
+			Endpoint:        endpointStr,
+			City:            city,
+			CountryCode:     countryCode,
+			Latency:         latency,
+			LatestHandshake: latestHandshake,
 		})
 	}
 
