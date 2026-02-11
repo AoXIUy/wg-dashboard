@@ -661,9 +661,16 @@ func GenerateAnalysisReport(ctx context.Context, days int) (*models.AnalysisRepo
 
 	// 2. 填充别名
 	aliases, _ := db.GetAliases()
+	
+	// 计算转换因子 (Mbps * 1e6 / 8 * Interval)
+	byteFactor := config.MegabitsPerSecond / config.BitsPerByte * config.CollectInterval.Seconds()
+
 	var peers []models.PeerAnalysis
 	for pk, stat := range peerStats {
 		stat.Alias = aliases[pk]
+		// 修正：将累加的速率转换为字节数
+		stat.TotalRx = int64(float64(stat.TotalRx) * byteFactor)
+		stat.TotalTx = int64(float64(stat.TotalTx) * byteFactor)
 		peers = append(peers, *stat)
 	}
 
@@ -685,9 +692,13 @@ func GenerateAnalysisReport(ctx context.Context, days int) (*models.AnalysisRepo
 				h := int((ts / 3600) % 24)
 				// 简单聚合
 				if ts/3600 != lastH {
+					// 修正：将速率和转换为字节
+					// 这里 sum 是该小时内所有记录的 rx_rate+tx_rate 之和
+					// 大致估算：sum * byteFactor
+					byteFactor := config.MegabitsPerSecond / config.BitsPerByte * config.CollectInterval.Seconds()
 					hourly = append(hourly, models.ActivityPoint{
 						Hour:  h,
-						RxSum: sum, // 简化: 暂时只用一个字段
+						RxSum: sum * byteFactor, 
 					})
 					lastH = ts / 3600
 				}
@@ -814,9 +825,12 @@ func GetGlobalTrafficChart(period string) (map[int64]interface{}, error) {
 
 	result := make(map[int64]interface{})
 	for k, v := range buckets {
-		result[k] = map[string]interface{}{
-			"rx": v.rx,
-			"tx": v.tx,
+		// 修正：求平均速率
+		if v.count > 0 {
+			result[k] = map[string]interface{}{
+				"rx": v.rx / float64(v.count),
+				"tx": v.tx / float64(v.count),
+			}
 		}
 	}
 	return result, nil
