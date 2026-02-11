@@ -301,9 +301,7 @@ func linearRegression(x, y []float64) float64 {
 
 // ================= 3. 最佳连接时间 & 全局热力图 (Optimal Time & Heatmap) =================
 
-func (ae *AnalysisEngine) AnalyzeGlobalTraffic() (OptimalTime, [][]float64, error) {
-	return ae.RefinedAnalysis()
-}
+
 
 func (ae *AnalysisEngine) RefinedAnalysis() (OptimalTime, [][]float64, []HourlyTraffic, error) {
 	// 使用 rx_rate 和 tx_rate，更直接反映带宽压力
