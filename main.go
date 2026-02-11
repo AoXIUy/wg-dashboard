@@ -173,10 +173,10 @@ type AccessLog struct {
 
 // --- SSE 结构 (优化版) ---
 type SSEBroker struct {
-	clients       map[chan string]bool
-	newClients    chan chan string
-	closedClients chan chan string
-	message       chan string
+	Clients       map[chan string]bool
+	NewClients    chan chan string
+	ClosedClients chan chan string
+	Message       chan string
 	mu            sync.RWMutex
 	rateLimit     time.Duration
 	lastBroadcast atomic.Value // time.Time
