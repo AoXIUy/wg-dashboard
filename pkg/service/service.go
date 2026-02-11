@@ -322,8 +322,6 @@ func StartProcessor(ctx context.Context, in <-chan models.RawSnapshot) {
 					})
 				}
 			}
-
-			}
 			
 			// 3. 无论 Redis 是否启用，都优先进行进程内广播 (核心修复)
 			peers, _, _, _ := CollectPeersData()
