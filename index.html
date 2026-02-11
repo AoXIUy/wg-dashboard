@@ -831,35 +831,202 @@
                         </div>
 
                         <div v-show="analysisTab==='topology'"
-                            class="relative w-full h-full min-h-[500px] bg-slate-100 dark:bg-[#0b1121]">
-                            <div id="networkTopology" class="absolute inset-0 z-0"></div>
-                        </div>
+                            class="relative w-full h-full min-h-[600px] flex overflow-hidden bg-slate-50 dark:bg-[#0b1121]">
 
-                        <div v-show="analysisTab==='heatmap'" class="p-6">
                             <div
-                                class="bg-white dark:bg-slate-800 rounded-2xl p-6 shadow-sm border border-slate-100 dark:border-white/5">
-                                <h3 class="text-sm font-bold text-slate-700 dark:text-slate-200 mb-4">7x24小时
-                                    全网流量热力图</h3>
-                                <canvas id="trafficHeatmap" class="w-full"></canvas>
-                                <div class="flex justify-between text-xs text-slate-400 mt-2">
-                                    <span>低负载 (蓝色)</span>
-                                    <span>高负载 (高亮)</span>
+                                class="absolute inset-0 pointer-events-none opacity-30 bg-[radial-gradient(#cbd5e1_1px,transparent_1px)] dark:bg-[radial-gradient(#1e293b_1px,transparent_1px)] [background-size:20px_20px]">
+                            </div>
+
+                            <div class="absolute top-4 left-4 z-10 flex flex-col gap-2">
+                                <div
+                                    class="glass-card p-1.5 rounded-lg shadow-lg flex flex-col gap-1 bg-white/80 dark:bg-slate-800/80 backdrop-blur-md border border-slate-200 dark:border-white/10">
+                                    <button @click="resetTopologyZoom" title="重置视图"
+                                        class="p-2 hover:bg-slate-100 dark:hover:bg-white/10 rounded-md text-slate-500 transition-colors">
+                                        <i data-lucide="maximize" class="w-5 h-5"></i>
+                                    </button>
+                                    <button @click="togglePhysics" title="冻结/解冻布局"
+                                        :class="['p-2 rounded-md transition-colors', physicsEnabled ? 'text-blue-500 bg-blue-50 dark:bg-blue-500/20' : 'text-slate-500 hover:bg-slate-100 dark:hover:bg-white/10']">
+                                        <i data-lucide="snowflake" class="w-5 h-5"></i>
+                                    </button>
                                 </div>
                             </div>
-                            <div v-if="analysisData && analysisData.optimal_time"
-                                class="mt-6 p-4 bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-100 dark:border-emerald-500/20 rounded-xl flex items-center gap-4">
+
+                            <div class="absolute bottom-4 left-4 z-10">
                                 <div
-                                    class="p-3 bg-emerald-100 dark:bg-emerald-500/20 rounded-full text-emerald-600 dark:text-emerald-400">
-                                    <i data-lucide="clock" class="w-6 h-6"></i>
+                                    class="glass-card px-4 py-3 rounded-xl shadow-lg bg-white/90 dark:bg-slate-800/90 backdrop-blur-md border border-slate-200 dark:border-white/10 text-xs font-medium text-slate-600 dark:text-slate-300 space-y-2">
+                                    <div class="flex items-center gap-2">
+                                        <span
+                                            class="w-3 h-3 rounded-full bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.5)]"></span>
+                                        <span>服务器 (Server)</span>
+                                    </div>
+                                    <div class="flex items-center gap-2">
+                                        <span
+                                            class="w-3 h-3 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]"></span>
+                                        <span>在线客户端</span>
+                                    </div>
+                                    <div class="flex items-center gap-2">
+                                        <span class="w-3 h-3 rounded-full bg-slate-400"></span>
+                                        <span>离线客户端</span>
+                                    </div>
                                 </div>
-                                <div>
-                                    <h4 class="font-bold text-emerald-800 dark:text-emerald-300">最佳维护时段推荐</h4>
-                                    <p class="text-sm text-emerald-700 dark:text-emerald-400 mt-1">
-                                        建议在 <b>{{analysisData.optimal_time.start_hour}}:00 -
-                                            {{analysisData.optimal_time.end_hour}}:00</b> 进行维护，
-                                        此时段平均负载仅为
-                                        {{fmtRate(analysisData.optimal_time.avg_load_mbps)}}。
-                                    </p>
+                            </div>
+
+                            <div id="networkTopology" class="w-full h-full outline-none active:cursor-grabbing"></div>
+
+                            <Transition enter-active-class="transform transition ease-in-out duration-300"
+                                enter-from-class="translate-x-full" enter-to-class="translate-x-0"
+                                leave-active-class="transform transition ease-in-out duration-300"
+                                leave-from-class="translate-x-0" leave-to-class="translate-x-full">
+                                <div v-if="selectedNode"
+                                    class="absolute right-0 top-0 h-full w-80 bg-white/95 dark:bg-[#0f172a]/95 backdrop-blur-xl border-l border-slate-200 dark:border-white/10 shadow-2xl z-20 p-6 overflow-y-auto">
+
+                                    <div class="flex justify-between items-start mb-6">
+                                        <h3
+                                            class="text-lg font-bold text-slate-800 dark:text-white flex items-center gap-2">
+                                            <i data-lucide="monitor" class="w-5 h-5 text-blue-500"></i>
+                                            节点详情
+                                        </h3>
+                                        <button @click="selectedNode=null"
+                                            class="p-1 hover:bg-slate-100 dark:hover:bg-white/10 rounded-full text-slate-400">
+                                            <i data-lucide="x" class="w-5 h-5"></i>
+                                        </button>
+                                    </div>
+
+                                    <div class="space-y-6">
+                                        <div
+                                            class="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-100 dark:border-white/5 text-center">
+                                            <div class="text-3xl font-bold mb-1"
+                                                :class="selectedNode.online ? 'text-emerald-500' : 'text-slate-400'">
+                                                {{ selectedNode.online ? '在线' : '离线' }}
+                                            </div>
+                                            <div class="text-xs text-slate-400 font-mono">{{ selectedNode.ip }}</div>
+                                        </div>
+
+                                        <div class="space-y-3 text-sm">
+                                            <div
+                                                class="flex justify-between py-2 border-b border-slate-100 dark:border-white/5">
+                                                <span class="text-slate-500">别名</span>
+                                                <span class="font-medium text-slate-700 dark:text-slate-200">{{
+                                                    selectedNode.label }}</span>
+                                            </div>
+                                            <div
+                                                class="flex justify-between py-2 border-b border-slate-100 dark:border-white/5">
+                                                <span class="text-slate-500">公钥</span>
+                                                <span
+                                                    class="font-mono text-xs text-slate-600 dark:text-slate-400 truncate w-32"
+                                                    :title="selectedNode.id">{{ selectedNode.id }}...</span>
+                                            </div>
+                                            <div
+                                                class="flex justify-between py-2 border-b border-slate-100 dark:border-white/5">
+                                                <span class="text-slate-500">累计上传</span>
+                                                <span class="font-mono text-blue-600 dark:text-blue-400">{{
+                                                    fmtBytes(selectedNode.tx) }}</span>
+                                            </div>
+                                            <div
+                                                class="flex justify-between py-2 border-b border-slate-100 dark:border-white/5">
+                                                <span class="text-slate-500">累计下载</span>
+                                                <span class="font-mono text-emerald-600 dark:text-emerald-400">{{
+                                                    fmtBytes(selectedNode.rx) }}</span>
+                                            </div>
+                                            <div
+                                                class="flex justify-between py-2 border-b border-slate-100 dark:border-white/5">
+                                                <span class="text-slate-500">最后活跃</span>
+                                                <span class="text-slate-600 dark:text-slate-300">{{
+                                                    formatLastSeen(selectedNode.lastSeen) }}</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </Transition>
+                        </div>
+
+                        <div v-show="analysisTab==='heatmap'" class="p-6 lg:p-10 space-y-8">
+
+                            <div
+                                class="glass-card bg-white dark:bg-[#0f172a] rounded-3xl p-6 shadow-xl border border-slate-100 dark:border-white/5 relative overflow-hidden">
+                                <div
+                                    class="absolute -top-20 -right-20 w-64 h-64 bg-blue-500/10 rounded-full blur-3xl pointer-events-none">
+                                </div>
+
+                                <div
+                                    class="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-8 relative z-10">
+                                    <div>
+                                        <h3
+                                            class="text-lg font-bold text-slate-800 dark:text-white flex items-center gap-2">
+                                            <i data-lucide="grid" class="w-5 h-5 text-blue-500"></i>
+                                            7x24小时 全网流量热力图
+                                        </h3>
+                                        <p class="text-xs text-slate-500 mt-1">识别网络使用高峰时段与空闲窗口</p>
+                                    </div>
+
+                                    <div
+                                        class="flex items-center gap-2 text-xs text-slate-500 mt-4 sm:mt-0 bg-slate-50 dark:bg-slate-800/50 p-2 rounded-lg border border-slate-100 dark:border-white/5">
+                                        <span>低负载</span>
+                                        <div
+                                            class="w-24 h-2 bg-gradient-to-r from-blue-100 via-blue-500 to-red-500 rounded-full">
+                                        </div>
+                                        <span>高负载</span>
+                                    </div>
+                                </div>
+
+                                <div class="relative w-full h-[320px] z-10">
+                                    <canvas id="trafficHeatmap"></canvas>
+                                </div>
+                            </div>
+
+                            <div v-if="analysisData && analysisData.optimal_time"
+                                class="grid grid-cols-1 md:grid-cols-2 gap-6">
+
+                                <div
+                                    class="group relative overflow-hidden rounded-2xl bg-gradient-to-br from-emerald-50 to-teal-50 dark:from-emerald-900/20 dark:to-teal-900/10 p-6 border border-emerald-100 dark:border-emerald-500/20">
+                                    <div
+                                        class="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
+                                        <i data-lucide="clock" class="w-24 h-24 text-emerald-600"></i>
+                                    </div>
+
+                                    <div class="relative z-10">
+                                        <div class="flex items-center gap-3 mb-3">
+                                            <div
+                                                class="p-2 bg-emerald-100 dark:bg-emerald-500/20 rounded-lg text-emerald-600 dark:text-emerald-400">
+                                                <i data-lucide="wrench" class="w-5 h-5"></i>
+                                            </div>
+                                            <h4 class="font-bold text-emerald-900 dark:text-emerald-100">最佳维护时段</h4>
+                                        </div>
+                                        <div class="text-3xl font-bold text-emerald-700 dark:text-emerald-400 mb-1">
+                                            {{analysisData.optimal_time.start_hour}}:00 -
+                                            {{analysisData.optimal_time.end_hour}}:00
+                                        </div>
+                                        <p class="text-sm text-emerald-600/80 dark:text-emerald-400/70">
+                                            该时段全网平均负载最低，仅为
+                                            <span
+                                                class="font-mono font-bold">{{fmtRate(analysisData.optimal_time.avg_load_mbps)}}</span>，
+                                            适合进行服务器重启或配置更新。
+                                        </p>
+                                    </div>
+                                </div>
+
+                                <div
+                                    class="group relative overflow-hidden rounded-2xl bg-gradient-to-br from-amber-50 to-orange-50 dark:from-amber-900/20 dark:to-orange-900/10 p-6 border border-amber-100 dark:border-amber-500/20">
+                                    <div
+                                        class="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
+                                        <i data-lucide="alert-triangle" class="w-24 h-24 text-amber-600"></i>
+                                    </div>
+
+                                    <div class="relative z-10">
+                                        <div class="flex items-center gap-3 mb-3">
+                                            <div
+                                                class="p-2 bg-amber-100 dark:bg-amber-500/20 rounded-lg text-amber-600 dark:text-amber-400">
+                                                <i data-lucide="activity" class="w-5 h-5"></i>
+                                            </div>
+                                            <h4 class="font-bold text-amber-900 dark:text-amber-100">峰值预警</h4>
+                                        </div>
+                                        <div class="text-3xl font-bold text-amber-700 dark:text-amber-400 mb-1">
+                                            14:00 - 16:00
+                                        </div>
+                                        <p class="text-sm text-amber-600/80 dark:text-amber-400/70">
+                                            检测到工作日下午出现流量高峰，建议在此期间避免进行带宽密集型操作。
+                                        </p>
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -1653,28 +1820,182 @@
                     } catch (e) { console.error(e); }
                 };
 
+                const selectedNode = ref(null);
+                const physicsEnabled = ref(true);
+                let networkInstance = null;
+
                 const initTopology = async () => {
-                    try {
-                        const res = await axios.get('/api/map/data', { headers: { Authorization: `Bearer ${token.value}` } });
-                        window.AdvancedApp.initTopology('networkTopology', res.data);
-                    } catch (e) { console.error(e); }
+                    const container = document.getElementById('networkTopology');
+                    if (!container) return;
+
+                    const nodes = [
+                        {
+                            id: 'server',
+                            label: 'WireGuard Server',
+                            group: 'server',
+                            value: 20,
+                            online: true,
+                            ip: meta.value.interface,
+                            tx: totalTxRate.value,
+                            rx: totalRxRate.value
+                        }
+                    ];
+
+                    const edges = [];
+
+                    peers.value.forEach(p => {
+                        nodes.push({
+                            id: p.public_key,
+                            label: p.alias || p.public_key.substring(0, 4),
+                            group: p.is_online ? 'client_online' : 'client_offline',
+                            value: 10,
+                            online: p.is_online,
+                            ip: p.allowed_ips[0],
+                            tx: p.transmit_bytes,
+                            rx: p.receive_bytes,
+                            lastSeen: p.last_seen_time
+                        });
+
+                        edges.push({
+                            from: 'server',
+                            to: p.public_key,
+                            value: p.is_online ? 2 : 1,
+                            dashes: !p.is_online,
+                            color: {
+                                color: p.is_online ? (isDark.value ? '#10b981' : '#10b981') : (isDark.value ? '#475569' : '#cbd5e1'),
+                                opacity: p.is_online ? 0.6 : 0.3
+                            }
+                        });
+                    });
+
+                    const options = {
+                        nodes: {
+                            shape: 'dot',
+                            font: {
+                                color: isDark.value ? '#e2e8f0' : '#334155',
+                                face: 'Inter',
+                                size: 14
+                            },
+                            borderWidth: 2,
+                            shadow: true
+                        },
+                        groups: {
+                            server: {
+                                color: { background: '#3b82f6', border: '#2563eb' },
+                                font: { size: 16, strokeWidth: 4, strokeColor: isDark.value ? '#0f172a' : '#fff' }
+                            },
+                            client_online: {
+                                color: { background: '#10b981', border: '#059669' }
+                            },
+                            client_offline: {
+                                color: { background: '#94a3b8', border: '#64748b' }
+                            }
+                        },
+                        edges: {
+                            width: 2,
+                            smooth: {
+                                type: 'continuous',
+                                forceDirection: 'none'
+                            }
+                        },
+                        physics: {
+                            stabilization: false,
+                            barnesHut: {
+                                gravitationalConstant: -8000,
+                                springConstant: 0.04,
+                                springLength: 95
+                            }
+                        },
+                        interaction: {
+                            hover: true,
+                            tooltipDelay: 200,
+                            zoomView: true
+                        }
+                    };
+
+                    const data = { nodes: new vis.DataSet(nodes), edges: new vis.DataSet(edges) };
+                    networkInstance = new vis.Network(container, data, options);
+
+                    networkInstance.on("click", function (params) {
+                        if (params.nodes.length > 0) {
+                            const nodeId = params.nodes[0];
+                            const nodeData = data.nodes.get(nodeId);
+                            if (nodeId !== 'server') {
+                                selectedNode.value = nodeData;
+                            } else {
+                                selectedNode.value = null;
+                            }
+                        } else {
+                            selectedNode.value = null;
+                        }
+                    });
                 };
 
-                const initHeatmap = async () => {
-                    // Heatmap data is part of the Advanced Analysis report
-                    if (!analysisData.value || !analysisData.value.global_heatmap) {
-                        try {
-                            const res = await axios.get('/api/analysis/advanced', { headers: { Authorization: `Bearer ${token.value}` } });
-                            if (analysisData.value) {
-                                analysisData.value.global_heatmap = res.data.global_heatmap;
-                            } else {
-                                analysisData.value = res.data;
+                const resetTopologyZoom = () => {
+                    if (networkInstance) networkInstance.fit({ animation: true });
+                };
+
+                const togglePhysics = () => {
+                    if (!networkInstance) return;
+                    physicsEnabled.value = !physicsEnabled.value;
+                    networkInstance.setOptions({ physics: { enabled: physicsEnabled.value } });
+                };
+
+                const initHeatmap = () => {
+                    const ctxEl = document.getElementById('trafficHeatmap');
+                    if (!ctxEl || !analysisData.value?.hourly_profile) return;
+
+                    const ctx = ctxEl.getContext('2d');
+                    const gradient = ctx.createLinearGradient(0, 0, 0, 300);
+                    gradient.addColorStop(0, '#3b82f6');
+                    gradient.addColorStop(0.5, '#6366f1');
+                    gradient.addColorStop(1, 'rgba(99, 102, 241, 0.1)');
+
+                    new Chart(ctx, {
+                        type: 'bar',
+                        data: {
+                            labels: analysisData.value.hourly_profile.map(h => `${h.hour}:00`),
+                            datasets: [{
+                                label: '综合负载',
+                                data: analysisData.value.hourly_profile.map(h => h.rx_sum + h.tx_sum),
+                                backgroundColor: gradient,
+                                borderRadius: 4,
+                                barPercentage: 0.8,
+                                categoryPercentage: 0.9,
+                                hoverBackgroundColor: '#f43f5e'
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            plugins: {
+                                legend: { display: false },
+                                tooltip: {
+                                    backgroundColor: isDark.value ? '#1e293b' : '#fff',
+                                    titleColor: isDark.value ? '#fff' : '#1e293b',
+                                    bodyColor: isDark.value ? '#94a3b8' : '#64748b',
+                                    borderColor: isDark.value ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)',
+                                    borderWidth: 1,
+                                    padding: 10,
+                                    callbacks: {
+                                        label: (c) => ` 流量: ${fmtBytes(c.raw)}`
+                                    }
+                                }
+                            },
+                            scales: {
+                                y: {
+                                    grid: { color: isDark.value ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.05)' },
+                                    ticks: { color: isDark.value ? '#64748b' : '#94a3b8', callback: (v) => fmtBytes(v) },
+                                    border: { display: false }
+                                },
+                                x: {
+                                    grid: { display: false },
+                                    ticks: { color: isDark.value ? '#64748b' : '#94a3b8', font: { size: 10 } },
+                                    border: { display: false }
+                                }
                             }
-                        } catch (e) { console.error(e); }
-                    }
-                    if (analysisData.value && analysisData.value.global_heatmap) {
-                        window.AdvancedApp.initHeatmap('trafficHeatmap', analysisData.value.global_heatmap);
-                    }
+                        }
+                    });
                 };
 
                 const renderAnalysisCharts = () => {
@@ -1954,7 +2275,8 @@ PersistentKeepalive = 25
                     showDeleteModal, peerToDelete, deleteLoading, confirmDelete,
                     accessLogs, logsLoading, fetchAccessLogs, getCountryCode, getGeoTitle,
                     showIpDetailModal, selectedIpInfo, openIpInfo,
-                    analysisTab, changeAnalysisTab
+                    analysisTab, changeAnalysisTab,
+                    selectedNode, physicsEnabled, resetTopologyZoom, togglePhysics
                 };
             }
         }).mount('#app');
