@@ -855,7 +855,8 @@ func initDB() error {
 	}
 
 	// 创建表
-	schema := `
+	// 创建表 1: traffic_history
+	schema1 := `
 	CREATE TABLE IF NOT EXISTS traffic_history (
 		id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
 		timestamp BIGINT UNSIGNED NOT NULL,
@@ -868,16 +869,21 @@ func initDB() error {
 		is_online TINYINT(1) DEFAULT 0,
 		INDEX idx_peer_time (peer_public_key, timestamp),
 		INDEX idx_time (timestamp)
-	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`
 
+	if _, err = db.ExecContext(ctx, schema1); err != nil {
+		return fmt.Errorf("创建 traffic_history 表失败: %w", err)
+	}
+
+	// 创建表 2: peer_aliases
+	schema2 := `
 	CREATE TABLE IF NOT EXISTS peer_aliases (
 		public_key CHAR(44) PRIMARY KEY,
 		alias TEXT NOT NULL
-	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-	`
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`
 
-	if _, err = db.ExecContext(ctx, schema); err != nil {
-		return fmt.Errorf("创建数据表失败: %w", err)
+	if _, err = db.ExecContext(ctx, schema2); err != nil {
+		return fmt.Errorf("创建 peer_aliases 表失败: %w", err)
 	}
 
 	logger.Println("数据库初始化成功")
