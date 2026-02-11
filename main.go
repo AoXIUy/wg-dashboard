@@ -1805,7 +1805,7 @@ func getMapData(c *gin.Context) {
 	var data []PeerGeo
 
 	for _, p := range peers {
-		if p.Endpoint == "" || p.Endpoint == "未连�? {
+		if p.Endpoint == "" || p.Endpoint == "未连接" {
 			continue
 		}
 
