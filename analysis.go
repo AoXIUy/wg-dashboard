@@ -41,11 +41,18 @@ type OptimalTime struct {
 	AvgLoadMbps float64 `json:"avg_load_mbps"`
 }
 
+type HourlyTraffic struct {
+	Hour  int     `json:"hour"`
+	RxSum float64 `json:"rx_sum"`
+	TxSum float64 `json:"tx_sum"`
+}
+
 type AdvancedReport struct {
 	Anomalies    []AnomalyEvent `json:"anomalies"`
-	ChurnRisks   []ChurnRisk    `json:"churn_risks"`
-	OptimalTime  OptimalTime    `json:"optimal_time"`
-	GlobalHeat   [][]float64    `json:"global_heatmap"` // 7x24 grid
+	ChurnRisks    []ChurnRisk     `json:"churn_risks"`
+	OptimalTime   OptimalTime     `json:"optimal_time"`
+	HourlyProfile []HourlyTraffic `json:"hourly_profile"`
+	GlobalHeat    [][]float64     `json:"global_heatmap"` // 7x24 grid
 }
 
 // ================= 1. 异常检测 (Anomaly Detection) =================
@@ -295,83 +302,17 @@ func linearRegression(x, y []float64) float64 {
 // ================= 3. 最佳连接时间 & 全局热力图 (Optimal Time & Heatmap) =================
 
 func (ae *AnalysisEngine) AnalyzeGlobalTraffic() (OptimalTime, [][]float64, error) {
-	// 获取过去 7 天的流量，按小时分组
-	query := `
-		SELECT 
-			HOUR(FROM_UNIXTIME(timestamp)) as hour_of_day,
-			DAYOFWEEK(FROM_UNIXTIME(timestamp)) as day_of_week, -- 1=Sun, 2=Mon...
-			AVG(rx_bytes + tx_bytes) as avg_traffic
-		FROM traffic_history
-		WHERE timestamp > ?
-		GROUP BY day_of_week, hour_of_day`
-
-	sevenDaysAgo := time.Now().Add(-7 * 24 * time.Hour).Unix()
-	rows, err := ae.db.Query(query, sevenDaysAgo)
-	if err != nil {
-		return OptimalTime{}, nil, err
-	}
-	defer rows.Close()
-
-	// 初始化 Heatmap: 7 days * 24 hours
-	// 行: 星期 (0=Sun, 1=Mon...6=Sat) - 注意 MySQL DAYOFWEEK 是 1-7
-	// 列: 小时 (0-23)
-	heatmap := make([][]float64, 7)
-	for i := range heatmap {
-		heatmap[i] = make([]float64, 24)
-	}
-
-	// 此时也顺便计算每小时的全局平均流量，用于找Optimal Time
-	hourlyTotal := make([]float64, 24)
-	hourlyCount := make([]int, 24)
-
-	for rows.Next() {
-		var h, d int
-		var avgBytes float64
-		if err := rows.Scan(&h, &d, &avgBytes); err != nil {
-			continue
-		}
-		
-		// MySQL Day: 1=Sun, 2=Mon... 7=Sat
-		// Go Struct: Let's map 0=Sun, 1=Mon...
-		dayIdx := d - 1
-		if dayIdx < 0 || dayIdx > 6 {
-			continue
-		}
-		if h < 0 || h > 23 {
-			continue
-		}
-
-		mbps := (avgBytes * 8) / 1000000 // Convert bytes to Mbps (average over collection interval is not quite rate, but bytes intensity)
-		// 注意: traffic_history 存的是累积量还是增量？
-		// 检查 main.go: traffic_history 存的是 rx_bytes, tx_bytes. 看起来是 snapshots.
-		// 其实 ProcessedLog 里的 rx_rate/tx_rate 没存入库？ 
-		// 查看 main.go 的 schema: rx_rate REAL, tx_rate REAL 都有.
-		// 所以查询其实应该查 rx_rate + tx_rate 的平均值更准确.
-		
-		heatmap[dayIdx][h] = mbps
-		
-		hourlyTotal[h] += mbps
-		hourlyCount[h]++
-	}
-
-	// 修正查询：因为 traffic_history 里有 rate 字段，我们重新写一个查 rate 的版本更稳
-	// 但为了保持代码连贯，我们先假设上面的 avg_traffic 其实是想表达 rate。
-	// 如果 traffic_history 主要是为了存流量快照，那 rx_bytes 是累积值吗？
-	// 检查 main.go L658: rx_bytes BIGINT UNSIGNED NOT NULL.
-	// 通常这种 Monitor 存的是 Counter。如果要算速率，得由 derivative 算出。
-	// 但是 L660 也有 rx_rate REAL. 
-	// 让我们改用 rx_rate + tx_rate.
-
 	return ae.RefinedAnalysis()
 }
 
-func (ae *AnalysisEngine) RefinedAnalysis() (OptimalTime, [][]float64, error) {
+func (ae *AnalysisEngine) RefinedAnalysis() (OptimalTime, [][]float64, []HourlyTraffic, error) {
 	// 使用 rx_rate 和 tx_rate，更直接反映带宽压力
 	query := `
 		SELECT 
 			HOUR(FROM_UNIXTIME(timestamp)) as hour_of_day,
 			DAYOFWEEK(FROM_UNIXTIME(timestamp)) as day_of_week, 
-			AVG(rx_rate + tx_rate) as avg_rate_mbps
+			AVG(rx_rate) as avg_rx,
+			AVG(tx_rate) as avg_tx
 		FROM traffic_history
 		WHERE timestamp > ?
 		GROUP BY day_of_week, hour_of_day`
@@ -379,33 +320,57 @@ func (ae *AnalysisEngine) RefinedAnalysis() (OptimalTime, [][]float64, error) {
 	sevenDaysAgo := time.Now().Add(-7 * 24 * time.Hour).Unix()
 	rows, err := ae.db.Query(query, sevenDaysAgo)
 	if err != nil {
-		return OptimalTime{}, nil, err
+		return OptimalTime{}, nil, nil, err
 	}
 	defer rows.Close()
 
+	// 7x24 Heatmap (Combined Load)
 	heatmap := make([][]float64, 7)
 	for i := range heatmap {
 		heatmap[i] = make([]float64, 24)
 	}
 	
-	hourlyAvg := make([]float64, 24)
-	
+	// Hourly Profile (24h) - Accumulators
+	hourlyRxSum := make([]float64, 24)
+	hourlyTxSum := make([]float64, 24)
+	hourlyCounts := make([]int, 24) // How many days of data for this hour
+
 	for rows.Next() {
 		var h, d int
-		var rate float64 // Mbps
-		if err := rows.Scan(&h, &d, &rate); err != nil {
+		var rx, tx float64 // Mbps
+		if err := rows.Scan(&h, &d, &rx, &tx); err != nil {
 			continue
 		}
 		
 		dayIdx := d - 1
 		if dayIdx >= 0 && dayIdx < 7 && h >= 0 && h < 24 {
-			// rate 在数据库是存的 float (main.go L87), 假设单位是 Mbps? 
-			// Check main.go L57: MegabitsPerSecond = 1000000.0. 
-			// Check main.go Processor logic (not fully visible but implied).
-			// Assuming rate IS Mbps or similar.
-			heatmap[dayIdx][h] = rate
-			hourlyAvg[h] += rate
+			totalRate := rx + tx
+			heatmap[dayIdx][h] = totalRate
+			
+			hourlyRxSum[h] += rx
+			hourlyTxSum[h] += tx
+			hourlyCounts[h]++
 		}
+	}
+
+	// Build Hourly Profile
+	var hourlyProfile []HourlyTraffic
+	// Also calc total avg for Optimal Time
+	hourlyTotalAvg := make([]float64, 24)
+
+	for i := 0; i < 24; i++ {
+		count := float64(hourlyCounts[i])
+		if count == 0 {
+			count = 1
+		}
+		rxAvg := hourlyRxSum[i] / count
+		txAvg := hourlyTxSum[i] / count
+		hourlyProfile = append(hourlyProfile, HourlyTraffic{
+			Hour:  i,
+			RxSum: rxAvg,
+			TxSum: txAvg,
+		})
+		hourlyTotalAvg[i] = rxAvg + txAvg
 	}
 
 	// Calculate Optimal Time (Low traffic window)
@@ -413,13 +378,11 @@ func (ae *AnalysisEngine) RefinedAnalysis() (OptimalTime, [][]float64, error) {
 	minTraffic := math.MaxFloat64
 	bestHour := 0
 	
-	// Normalize hourlyAvg (divide by 7 days approx, or just use sum for comparison)
-	// Cyclic check
 	for i := 0; i < 24; i++ {
 		sum := 0.0
 		for j := 0; j < 3; j++ {
 			idx := (i + j) % 24
-			sum += hourlyAvg[idx]
+			sum += hourlyTotalAvg[idx]
 		}
 		if sum < minTraffic {
 			minTraffic = sum
@@ -428,13 +391,13 @@ func (ae *AnalysisEngine) RefinedAnalysis() (OptimalTime, [][]float64, error) {
 	}
 
 	// Calculate average load during that window
-	optimalLoad := minTraffic / (3 * 7) // approx average
+	optimalLoad := minTraffic / 3
 
 	return OptimalTime{
 		StartHour:   bestHour,
 		EndHour:     (bestHour + 3) % 24,
 		AvgLoadMbps: optimalLoad,
-	}, heatmap, nil
+	}, heatmap, hourlyProfile, nil
 }
 
 func (ae *AnalysisEngine) GetAdvancedReport() (AdvancedReport, error) {
@@ -448,15 +411,16 @@ func (ae *AnalysisEngine) GetAdvancedReport() (AdvancedReport, error) {
 		return AdvancedReport{}, err
 	}
 
-	optTime, heatmap, err := ae.RefinedAnalysis()
+	optTime, heatmap, hourlyProfile, err := ae.RefinedAnalysis()
 	if err != nil {
 		return AdvancedReport{}, err
 	}
 
 	return AdvancedReport{
-		Anomalies:   anomalies,
-		ChurnRisks:  churns,
-		OptimalTime: optTime,
-		GlobalHeat:  heatmap,
+		Anomalies:     anomalies,
+		ChurnRisks:    churns,
+		OptimalTime:   optTime,
+		GlobalHeat:    heatmap,
+		HourlyProfile: hourlyProfile,
 	}, nil
 }

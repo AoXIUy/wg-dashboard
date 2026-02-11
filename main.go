@@ -1015,7 +1015,7 @@ func collectPeersData() ([]PeerData, string, int, error) {
 			RxRate:        rxRate,
 			TxRate:        txRate,
 			IsOnline:      isOnline,
-			Latency:       latencyCache.Get(pk),
+			Latency:       getPeerLatency(pk),
 		})
 	}
 
