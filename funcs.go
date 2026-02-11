@@ -84,146 +84,139 @@ func getMapData(c *gin.Context) {
 	}
 
 	type PeerGeo struct {
-		PublicKey string  `json:"public_key"`
-		Alias     string  `json:"alias"`
-		Endpoint  string  `json:"endpoint"`
-		IsOnline  bool    `json:"is_online"`
-		Lat       float64 `json:"lat"`
-		Lon       float64 `json:"lon"`
-		City      string  `json:"city"`
-		Country   string  `json:"country_code"`
-		Source    string  `json:"source"` // "local", "external", "cache"
+		PublicKey  string   `json:"public_key"`
+		Alias      string   `json:"alias"`
+		Endpoint   string   `json:"endpoint"`
+		IsOnline   bool     `json:"is_online"`
+		Lat        float64  `json:"lat"`
+		Lon        float64  `json:"lon"`
+		City       string   `json:"city"`
+		Country    string   `json:"country_code"`
+		Source     string   `json:"source"`
+		RxRate     float64  `json:"rx_rate"`
+		TxRate     float64  `json:"tx_rate"`
+		TotalRx    int64    `json:"total_rx"`
+		TotalTx    int64    `json:"total_tx"`
+		AllowedIPs []string `json:"allowed_ips"`
 	}
 
 	var data []PeerGeo
 
 	for _, p := range peers {
-		if p.Endpoint == "" || p.Endpoint == "未连接" {
-			continue
-		}
-
-		host, _, err := net.SplitHostPort(p.Endpoint)
-		if err != nil {
-			host = p.Endpoint // fallback
-		}
+		// 即使没有 Endpoint (未连接)，也应该在拓扑图中显示，作为离线节点
+		// 地图模式下如果没有坐标则无法显示，但拓扑图应该显示所有 Peers
 		
-		host = strings.Trim(host, "[]")
-		ip := net.ParseIP(host)
-		if ip == nil {
-			continue
-		}
-		
-		// 忽略内网 IP
-		if ip.IsPrivate() || ip.IsLoopback() {
-			continue
+		// 尝试获取 IP 用于定位
+		var ip net.IP
+		host := ""
+		if p.Endpoint != "" && p.Endpoint != "未连接" {
+			h, _, err := net.SplitHostPort(p.Endpoint)
+			if err == nil {
+				host = strings.Trim(h, "[]")
+				ip = net.ParseIP(host)
+			}
 		}
 
 		var lat, lon float64
 		var city, country string
-		var source string = "unknown"
+		var source string = "none"
 
-		// 1. 尝试本地 GeoIP 数据库 (优先)
-		localSuccess := false
-		if geoCity != nil {
-			if record, err := geoCity.City(ip); err == nil {
-				lat = record.Location.Latitude
-				lon = record.Location.Longitude
-				country = record.Country.IsoCode
-				if name, ok := record.City.Names["zh-CN"]; ok {
-					city = name
-				} else {
-					city = record.City.Names["en"]
-				}
-				
-				// 判定本地数据是否足够详细
-				if lat != 0 && lon != 0 && city != "" {
-					localSuccess = true
-					source = "local"
-				}
-			}
-		}
-
-		// 2. 如果本地获取失败或不完整，尝试缓存或外部 API
-		if !localSuccess {
-			ipStr := ip.String()
-			
-			// 2.1 查内存缓存
-			geoCacheMu.RLock()
-			entry, found := geoCache[ipStr]
-			geoCacheMu.RUnlock()
-
-			if found && time.Since(entry.Timestamp) < 24*time.Hour {
-				lat = entry.Lat
-				lon = entry.Lon
-				city = entry.City
-				country = entry.Country
-				source = "cache_mem"
-			} else {
-				// 2.2 查 Redis 缓存 (如果启用了 Redis)
-				redisHit := false
-				if redisEnabled && rdb != nil {
-					val, err := rdb.Get(context.Background(), "wg:geo:"+ipStr).Result()
-					if err == nil {
-						var redisEntry GeoCacheEntry
-						if json.Unmarshal([]byte(val), &redisEntry) == nil {
-							lat = redisEntry.Lat
-							lon = redisEntry.Lon
-							city = redisEntry.City
-							country = redisEntry.Country
-							source = "cache_redis"
-							redisHit = true
-							
-							// 同步回内存缓存
-							geoCacheMu.Lock()
-							geoCache[ipStr] = redisEntry
-							geoCacheMu.Unlock()
-						}
-					}
-				}
-
-				// 2.3 调用外部 API (如无缓存)
-				if !redisHit {
-					// 只有当本地完全失败，或者经纬度为0时才调用
-					// 为了避免阻塞，这里是同步调用，可能会慢。
-					// 建议前端做懒加载，但这里后端出接口，暂且忍受一下延迟，或只对前N个并发。
-					// 为防止卡死，设置了较短的 Timeout
-					l, ln, c, cc, err := fetchGeoFromAPI(ipStr)
-					if err == nil {
-						lat, lon, city, country = l, ln, c, cc
-						source = "external"
-						
-						newEntry := GeoCacheEntry{
-							Lat:       lat,
-							Lon:       lon,
-							City:      city,
-							Country:   country,
-							Timestamp: time.Now(),
-						}
-						
-						// 写入内存缓存
-						geoCacheMu.Lock()
-						geoCache[ipStr] = newEntry
-						geoCacheMu.Unlock()
-						
-						// 写入 Redis 缓存
-						if redisEnabled && rdb != nil {
-							if jsonBytes, err := json.Marshal(newEntry); err == nil {
-								rdb.Set(context.Background(), "wg:geo:"+ipStr, jsonBytes, 24*time.Hour)
-							}
-						}
+		if ip != nil && !ip.IsPrivate() && !ip.IsLoopback() {
+			// 1. 尝试本地 GeoIP 数据库 (优先)
+			localSuccess := false
+			if geoCity != nil {
+				if record, err := geoCity.City(ip); err == nil {
+					lat = record.Location.Latitude
+					lon = record.Location.Longitude
+					country = record.Country.IsoCode
+					if name, ok := record.City.Names["zh-CN"]; ok {
+						city = name
 					} else {
-						// API 失败，如果有本地即使不完整的数据，也回退使用本地
-						if geoCity != nil {
-							if record, err := geoCity.City(ip); err == nil {
-								lat = record.Location.Latitude
-								lon = record.Location.Longitude
-								country = record.Country.IsoCode
-								if name, ok := record.City.Names["zh-CN"]; ok {
-									city = name
-								} else {
-									city = record.City.Names["en"]
+						city = record.City.Names["en"]
+					}
+					
+					if lat != 0 && lon != 0 && city != "" {
+						localSuccess = true
+						source = "local"
+					}
+				}
+			}
+
+			// 2. 如果本地获取失败或不完整，尝试缓存或外部 API
+			if !localSuccess {
+				ipStr := ip.String()
+				
+				// 2.1 查内存缓存
+				geoCacheMu.RLock()
+				entry, found := geoCache[ipStr]
+				geoCacheMu.RUnlock()
+
+				if found && time.Since(entry.Timestamp) < 24*time.Hour {
+					lat = entry.Lat
+					lon = entry.Lon
+					city = entry.City
+					country = entry.Country
+					source = "cache_mem"
+				} else {
+					// 2.2 查 Redis 缓存
+					redisHit := false
+					if redisEnabled && rdb != nil {
+						val, err := rdb.Get(context.Background(), "wg:geo:"+ipStr).Result()
+						if err == nil {
+							var redisEntry GeoCacheEntry
+							if json.Unmarshal([]byte(val), &redisEntry) == nil {
+								lat = redisEntry.Lat
+								lon = redisEntry.Lon
+								city = redisEntry.City
+								country = redisEntry.Country
+								source = "cache_redis"
+								redisHit = true
+								
+								geoCacheMu.Lock()
+								geoCache[ipStr] = redisEntry
+								geoCacheMu.Unlock()
+							}
+						}
+					}
+
+					// 2.3 调用外部 API
+					if !redisHit {
+						l, ln, c, cc, err := fetchGeoFromAPI(ipStr)
+						if err == nil {
+							lat, lon, city, country = l, ln, c, cc
+							source = "external"
+							
+							newEntry := GeoCacheEntry{
+								Lat:       lat,
+								Lon:       lon,
+								City:      city,
+								Country:   country,
+								Timestamp: time.Now(),
+							}
+							
+							geoCacheMu.Lock()
+							geoCache[ipStr] = newEntry
+							geoCacheMu.Unlock()
+							
+							if redisEnabled && rdb != nil {
+								if jsonBytes, err := json.Marshal(newEntry); err == nil {
+									rdb.Set(context.Background(), "wg:geo:"+ipStr, jsonBytes, 24*time.Hour)
 								}
-								source = "local_fallback"
+							}
+						} else {
+							// 回退使用本地不完整数据
+							if geoCity != nil {
+								if record, err := geoCity.City(ip); err == nil {
+									lat = record.Location.Latitude
+									lon = record.Location.Longitude
+									country = record.Country.IsoCode
+									if name, ok := record.City.Names["zh-CN"]; ok {
+										city = name
+									} else {
+										city = record.City.Names["en"]
+									}
+									source = "local_fallback"
+								}
 							}
 						}
 					}
@@ -231,19 +224,22 @@ func getMapData(c *gin.Context) {
 			}
 		}
 
-		if lat != 0 || lon != 0 {
-			data = append(data, PeerGeo{
-				PublicKey: p.PublicKey,
-				Alias:     p.Alias,
-				Endpoint:  p.Endpoint,
-				IsOnline:  p.IsOnline,
-				Lat:       lat,
-				Lon:       lon,
-				City:      city,
-				Country:   country,
-				Source:    source,
-			})
-		}
+		data = append(data, PeerGeo{
+			PublicKey:  p.PublicKey,
+			Alias:      p.Alias,
+			Endpoint:   p.Endpoint,
+			IsOnline:   p.IsOnline,
+			Lat:        lat,
+			Lon:        lon,
+			City:       city,
+			Country:    country,
+			Source:     source,
+			RxRate:     p.RxRate,
+			TxRate:     p.TxRate,
+			TotalRx:    p.ReceiveBytes,
+			TotalTx:    p.TransmitBytes,
+			AllowedIPs: p.AllowedIPs,
+		})
 	}
 
 	c.JSON(http.StatusOK, data)

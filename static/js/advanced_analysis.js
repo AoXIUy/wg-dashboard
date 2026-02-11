@@ -65,44 +65,104 @@ window.AdvancedApp = {
         const container = document.getElementById(elementId);
         if (!container) return;
 
+        // Server Node (Center)
         const nodes = new vis.DataSet([
-            { id: 'server', label: 'Server', color: '#3b82f6', size: 30, shape: 'dot', font: { color: '#fff' } }
+            {
+                id: 'server',
+                label: 'WG Server',
+                color: { background: '#3b82f6', border: '#2563eb' },
+                size: 40,
+                shape: 'hexagon',
+                font: { color: '#fff', size: 14, face: 'Inter' },
+                shadow: true,
+                title: 'WireGuard Server'
+            }
         ]);
 
         const edges = new vis.DataSet([]);
 
+        // Helper to format bytes
+        const fmtBytes = (b) => {
+            if (!b) return '0 B';
+            const i = Math.floor(Math.log(b) / Math.log(1024));
+            return (b / Math.pow(1024, i)).toFixed(1) + ' ' + ['B', 'KB', 'MB', 'GB', 'TB'][i];
+        };
+
+        // Helper to format rate
+        const fmtRate = (v) => v ? v.toFixed(2) + ' Mbps' : '0 Mbps';
+
         peerData.forEach(p => {
-            const color = p.is_online ? '#10b981' : '#64748b';
+            const isOnline = p.is_online;
+            const rxRate = p.rx_rate || 0;
+            const txRate = p.tx_rate || 0;
+            const totalRate = rxRate + txRate;
+
+            // Node Color & Shape
+            let color = isOnline ? '#10b981' : '#64748b'; // Green or Gray
+            if (isOnline && totalRate > 50) color = '#f59e0b'; // High traffic (Amber)
+            if (isOnline && totalRate > 100) color = '#ef4444'; // Very high traffic (Red)
+
+            const label = p.alias || p.public_key.substring(0, 4);
+
+            // Rich Tooltip (HTML)
+            const tooltipContent = document.createElement('div');
+            tooltipContent.className = 'p-2 text-xs font-sans';
+            tooltipContent.innerHTML = `
+                <div class="font-bold text-sm mb-1">${p.alias || 'Unknown'}</div>
+                <div class="text-gray-400 font-mono mb-2">${p.public_key.substring(0, 12)}...</div>
+                <div class="grid grid-cols-2 gap-2">
+                    <div><span class="text-gray-500">IP:</span> ${p.allowed_ips ? p.allowed_ips[0] : 'N/A'}</div>
+                    <div><span class="text-gray-500">Loc:</span> ${p.city || '-'}, ${p.country_code || '-'}</div>
+                    <div><span class="text-emerald-500">Rx:</span> ${fmtRate(rxRate)}</div>
+                    <div><span class="text-blue-500">Tx:</span> ${fmtRate(txRate)}</div>
+                    <div><span class="text-gray-500">Total:</span> ${fmtBytes(p.total_rx + p.total_tx)}</div>
+                    <div><span class="text-gray-500">State:</span> ${isOnline ? '<span class="text-green-500">Online</span>' : '<span class="text-gray-500">Offline</span>'}</div>
+                </div>
+            `;
+
             nodes.add({
                 id: p.public_key,
-                label: p.alias || p.public_key.substring(0, 4),
-                color: color,
-                size: 15,
+                label: label,
+                color: { background: color, border: '#fff', highlight: { border: '#3b82f6', background: color } },
+                size: isOnline ? 20 + Math.min(totalRate, 20) : 15, // Dynamic size based on traffic
                 shape: 'dot',
-                font: { color: '#cbd5e1' }
+                font: { color: '#94a3b8', size: 12, face: 'Inter' },
+                title: tooltipContent // Vis.js supports DOM elements for title
             });
 
+            // Edge Style
             edges.add({
                 from: 'server',
                 to: p.public_key,
-                color: { color: color, opacity: 0.4 },
-                width: p.is_online ? 2 : 1,
-                dashes: !p.is_online
+                color: { color: isOnline ? '#94a3b8' : '#e2e8f0', opacity: isOnline ? 0.6 : 0.3, highlight: '#3b82f6' },
+                width: isOnline ? 1 + Math.min(totalRate / 5, 10) : 1, // Dynamic width based on traffic
+                dashes: !isOnline,
+                smooth: { type: 'continuous', roundness: 0.5 }
             });
         });
 
         const data = { nodes: nodes, edges: edges };
         const options = {
-            nodes: { borderWidth: 0, shadow: true },
-            edges: { smooth: { type: 'continuous' } },
+            nodes: { borderWidth: 2, shadow: true },
+            edges: { selectionWidth: 2, hoverWidth: 2 },
             physics: {
-                stabilization: false,
-                barnesHut: { gravitationalConstant: -2000, springConstant: 0.04 }
+                stabilization: true,
+                forceAtlas2Based: {
+                    gravitationalConstant: -100,
+                    centralGravity: 0.005,
+                    springLength: 200,
+                    springConstant: 0.05,
+                    damping: 0.4
+                },
+                solver: 'forceAtlas2Based'
             },
-            interaction: { hover: true, tooltipDelay: 200 }
+            interaction: { hover: true, tooltipDelay: 100, zoomView: true }
         };
 
         this.network = new vis.Network(container, data, options);
+
+        // Fit to center
+        setTimeout(() => this.network.fit({ animation: { duration: 1000, easingFunction: 'easeInOutQuad' } }), 500);
     },
 
     // ================= Traffic Heatmap (Canvas) =================
