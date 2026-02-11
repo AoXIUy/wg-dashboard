@@ -203,7 +203,7 @@ func main() {
 	flag.StringVar(&WGInterface, "iface", "wg0", "WireGuard 接口名称")
 	flag.StringVar(&ServerPort, "port", ":8080", "Web 监听端口")
 	flag.StringVar(&MySQLDSN, "mysql", "wg_user:cloud123@tcp(127.0.0.1:3306)/wg_monitor?charset=utf8mb4&parseTime=True&loc=Local", "MySQL 连接字符串")
-	flag.StringVar(&RedisAddr, "redis", "127.0.0.1:6379", "Redis 地址")
+	flag.StringVar(&RedisAddr, "redis", "192.168.10.119:6379", "Redis 地址")
 	flag.IntVar(&Retention, "days", 30, "数据保留天数")
 	flag.StringVar(&AdminPassword, "password", "admin123", "仪表盘访问密码")
 	flag.StringVar(&JWTSecret, "secret", "change_this_secret_in_prod", "JWT 签名密钥")
