@@ -109,6 +109,8 @@ type PeerData struct {
 	IsOnline      bool      `json:"is_online"`
 	LastSeen time.Time
 }
+
+type PeerState struct {
 	LastRx   int64
 	LastTx   int64
 	LastSeen time.Time
@@ -826,9 +828,7 @@ func getGeoIPInfo(c *gin.Context) {
 
 }
 
-	c.JSON(http.StatusOK, resp)
 
-}
 
 // 供 funcs.go 使用的辅助函数
 func getPeerLatency(pk string) string {
