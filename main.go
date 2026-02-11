@@ -156,6 +156,8 @@ type PeerAnalysis struct {
 	Endpoint        string   `json:"endpoint"`
 	City            string   `json:"city"`
 	CountryCode     string   `json:"country_code"`
+	Latitude        float64  `json:"lat"`
+	Longitude       float64  `json:"lon"`
 	Latency         string   `json:"latency"`
 	LatestHandshake int64    `json:"latest_handshake"`
 	IsOnline        bool     `json:"is_online"`
@@ -2076,6 +2078,7 @@ func generateAnalysisReport(ctx context.Context, days int) (*AnalysisReport, err
 		}
 
 		// GeoIP 解析
+		var latitude, longitude float64
 		if endpointStr != "" {
 			host, _, _ := net.SplitHostPort(endpointStr)
 			// 如果 split 失败（比如只有 IP 没有端口），尝试直接用
@@ -2093,6 +2096,8 @@ func generateAnalysisReport(ctx context.Context, days int) (*AnalysisReport, err
 							city = record.City.Names["en"]
 						}
 						countryCode = record.Country.IsoCode
+						latitude = record.Location.Latitude
+						longitude = record.Location.Longitude
 					}
 				}
 			}
@@ -2113,6 +2118,8 @@ func generateAnalysisReport(ctx context.Context, days int) (*AnalysisReport, err
 			Endpoint:        endpointStr,
 			City:            city,
 			CountryCode:     countryCode,
+			Latitude:        latitude,
+			Longitude:       longitude,
 			Latency:         latency,
 			LatestHandshake: latestHandshake,
 			IsOnline:        isOnline,
