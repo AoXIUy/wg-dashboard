@@ -1,7 +1,3 @@
-{
-type: uploaded file
-fileName: aoxiuy/wg-dashboard/wg-dashboard-c34a87407149d2e350a26a8d67c7e0d2feae7fc8/index.html
-fullContent:
 <!DOCTYPE html>
 <html lang="zh" class="dark">
 
@@ -277,7 +273,8 @@ fullContent:
                                 class="text-blue-500">Pro</span></h1>
                         <div
                             class="flex items-center gap-2 text-[11px] text-slate-500 dark:text-slate-400 font-mono mt-0.5">
-                            <span :class="['w-1.5 h-1.5 rounded-full', isConnected ? 'bg-emerald-500 status-pulse' : 'bg-red-500']"></span>
+                            <span
+                                :class="['w-1.5 h-1.5 rounded-full', isConnected ? 'bg-emerald-500 status-pulse' : 'bg-red-500']"></span>
                             {{ meta.interface }}:{{ meta.port }}
                             <span v-if="!isConnected" class="text-red-500 ml-1">(连接中断)</span>
                         </div>
@@ -446,12 +443,27 @@ fullContent:
                                     </td>
                                     <td class="p-5">
                                         <div class="flex flex-col gap-1">
-                                            <div @click="copyText(p.allowed_ips[0], 'IP')"
-                                                class="bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded border border-slate-200 dark:border-white/5 w-fit font-mono text-xs text-slate-600 dark:text-slate-300 cursor-pointer hover:border-blue-400 hover:text-blue-500 transition-all">
-                                                {{ p.allowed_ips[0] }}
+                                            <div class="flex items-center gap-2">
+                                                <div @click="copyText(p.allowed_ips[0], 'IP')"
+                                                    class="bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded border border-slate-200 dark:border-white/5 w-fit font-mono text-xs text-slate-600 dark:text-slate-300 cursor-pointer hover:border-blue-400 hover:text-blue-500 transition-all truncate max-w-[120px]"
+                                                    :title="p.allowed_ips[0]">
+                                                    {{ p.allowed_ips[0] }}
+                                                </div>
+                                                <button @click.stop="openIpInfo(p.allowed_ips[0])"
+                                                    class="p-1 rounded-md hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-400 hover:text-blue-500 transition-colors">
+                                                    <i data-lucide="info" class="w-3 h-3"></i>
+                                                </button>
                                             </div>
-                                            <div class="text-[10px] text-slate-400 truncate max-w-[140px]"
-                                                :title="p.endpoint">{{ p.endpoint || '未连接' }}</div>
+                                            <div class="flex items-center gap-2">
+                                                <div class="text-[10px] text-slate-400 truncate max-w-[140px]"
+                                                    :title="p.endpoint">
+                                                    {{ p.endpoint || '未连接' }}
+                                                </div>
+                                                <button v-if="p.endpoint" @click.stop="openIpInfo(p.endpoint)"
+                                                    class="p-1 rounded-md hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-400 hover:text-blue-500 transition-colors">
+                                                    <i data-lucide="globe" class="w-3 h-3"></i>
+                                                </button>
+                                            </div>
                                         </div>
                                     </td>
                                     <td class="p-5 font-mono text-xs">
@@ -519,7 +531,15 @@ fullContent:
                                             @click="editAlias(p)">
                                             {{ p.alias || '未命名' }}
                                         </div>
-                                        <div class="text-[10px] text-slate-500 font-mono">{{ p.allowed_ips[0] }}</div>
+                                        <div class="flex items-center gap-2 mt-0.5">
+                                            <div
+                                                class="text-[10px] text-slate-500 font-mono bg-slate-100 dark:bg-slate-900 px-1.5 py-0.5 rounded">
+                                                {{ p.allowed_ips[0] }}
+                                            </div>
+                                            <button @click.stop="openIpInfo(p.allowed_ips[0])" class="text-slate-400">
+                                                <i data-lucide="info" class="w-3 h-3"></i>
+                                            </button>
+                                        </div>
                                     </div>
                                 </div>
                                 <div class="flex gap-2">
@@ -842,10 +862,15 @@ fullContent:
                                         <td class="p-3">
                                             <div class="flex items-center gap-2">
                                                 <img v-if="getCountryCode(log.endpoint)"
-                                                    :src="`/static/flags/${getCountryCode(log.endpoint).toLowerCase()}.png`"
+                                                    :src="`https://flagcdn.com/w40/${getCountryCode(log.endpoint).toLowerCase()}.png`"
                                                     class="w-5 h-auto rounded shadow-sm object-cover"
                                                     :title="getGeoTitle(log.endpoint)">
                                                 <span class="font-bold font-mono">{{ log.endpoint }}</span>
+                                                <button @click.stop="openIpInfo(log.endpoint)"
+                                                    class="p-1 rounded-md hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-400 hover:text-blue-500 transition-colors"
+                                                    title="详细信息">
+                                                    <i data-lucide="info" class="w-3 h-3"></i>
+                                                </button>
                                             </div>
                                         </td>
                                         <td class="p-3 text-right text-emerald-600 dark:text-emerald-400">{{
@@ -858,6 +883,79 @@ fullContent:
                         </div>
                     </div>
 
+                </div>
+            </div>
+        </Transition>
+
+        <Transition enter-active-class="transition duration-300 ease-out" enter-from-class="opacity-0 scale-95 blur-sm"
+            enter-to-class="opacity-100 scale-100 blur-0" leave-active-class="transition duration-200 ease-in"
+            leave-from-class="opacity-100 scale-100" leave-to-class="opacity-0 scale-95 blur-sm">
+            <div v-if="showIpDetailModal"
+                class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+                @click.self="showIpDetailModal=false">
+                <div class="glass-card bg-white dark:bg-[#0f172a] rounded-3xl w-full max-w-sm p-6 shadow-2xl relative">
+                    <button @click="showIpDetailModal=false"
+                        class="absolute top-4 right-4 p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full text-slate-500">
+                        <i data-lucide="x" class="w-5 h-5"></i>
+                    </button>
+
+                    <div class="text-center mb-6">
+                        <div
+                            class="inline-flex items-center justify-center w-12 h-12 rounded-xl bg-blue-50 dark:bg-blue-900/20 text-blue-500 mb-3">
+                            <i data-lucide="globe" class="w-6 h-6"></i>
+                        </div>
+                        <h3 class="text-lg font-bold text-slate-800 dark:text-white">IP 信息详情</h3>
+                    </div>
+
+                    <div v-if="selectedIpInfo.loading" class="flex flex-col items-center justify-center py-8">
+                        <i data-lucide="loader-2" class="w-8 h-8 animate-spin text-blue-500 mb-2"></i>
+                        <span class="text-xs text-slate-400">正在查询 GeoIP 数据库...</span>
+                    </div>
+
+                    <div v-else class="space-y-4">
+                        <div
+                            class="bg-slate-50 dark:bg-slate-900/50 rounded-xl p-4 border border-slate-100 dark:border-white/5 text-center">
+                            <div class="text-xs text-slate-400 mb-1">IP 地址</div>
+                            <div
+                                class="text-xl font-mono font-bold text-slate-700 dark:text-slate-200 select-all break-all">
+                                {{ selectedIpInfo.ip }}</div>
+                            <div v-if="selectedIpInfo.isPrivate"
+                                class="mt-2 inline-block px-2 py-0.5 rounded text-[10px] bg-slate-200 text-slate-600 dark:bg-slate-700 dark:text-slate-300">
+                                局域网 / 私有地址
+                            </div>
+                        </div>
+
+                        <div v-if="!selectedIpInfo.isPrivate" class="grid grid-cols-2 gap-3">
+                            <div
+                                class="bg-slate-50 dark:bg-slate-900/50 rounded-xl p-3 border border-slate-100 dark:border-white/5">
+                                <div class="text-[10px] text-slate-400 mb-1">国家 / 地区</div>
+                                <div class="flex items-center gap-2 font-medium text-slate-700 dark:text-slate-200">
+                                    <img v-if="selectedIpInfo.country_code"
+                                        :src="`https://flagcdn.com/w40/${selectedIpInfo.country_code.toLowerCase()}.png`"
+                                        class="w-5 rounded shadow-sm">
+                                    <span>{{ selectedIpInfo.country_code || '-' }}</span>
+                                </div>
+                            </div>
+                            <div
+                                class="bg-slate-50 dark:bg-slate-900/50 rounded-xl p-3 border border-slate-100 dark:border-white/5">
+                                <div class="text-[10px] text-slate-400 mb-1">城市</div>
+                                <div class="font-medium text-slate-700 dark:text-slate-200 truncate"
+                                    :title="selectedIpInfo.city">
+                                    {{ selectedIpInfo.city || '-' }}
+                                </div>
+                            </div>
+                        </div>
+
+                        <div v-if="!selectedIpInfo.isPrivate"
+                            class="bg-slate-50 dark:bg-slate-900/50 rounded-xl p-4 border border-slate-100 dark:border-white/5">
+                            <div class="text-[10px] text-slate-400 mb-1">网络运营商 (ASN)</div>
+                            <div class="text-sm font-medium text-slate-700 dark:text-slate-200 break-words">
+                                <span v-if="selectedIpInfo.asn_number" class="text-blue-500 font-mono mr-1">AS{{
+                                    selectedIpInfo.asn_number }}</span>
+                                {{ selectedIpInfo.asn || '未知' }}
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
         </Transition>
@@ -898,7 +996,7 @@ fullContent:
                 </div>
             </div>
         </Transition>
-        </div>
+    </div>
 
     <script>
         const { createApp, ref, reactive, onMounted, onUnmounted, computed, nextTick, watch } = Vue;
@@ -989,16 +1087,25 @@ fullContent:
 
                 // --- IP 地理位置缓存 ---
                 const ipCache = reactive({});
-                const getIp = (endpoint) => endpoint ? endpoint.split(':')[0].replace('[', '').replace(']', '') : '';
+                const getIp = (endpoint) => {
+                    if (!endpoint) return '';
+                    if (endpoint.includes(']')) {
+                        return endpoint.split(']')[0].replace('[', '');
+                    }
+                    if (endpoint.split(':').length > 2) {
+                        return endpoint;
+                    }
+                    return endpoint.split(':')[0];
+                };
                 const isPrivateIp = (ip) => ip.startsWith('127.') || ip.startsWith('10.') || ip.startsWith('192.168.') || ip.startsWith('172.16.');
 
                 const resolveIpLocation = async (endpoint) => {
                     const ip = getIp(endpoint);
                     if (!ip || isPrivateIp(ip) || ipCache.hasOwnProperty(ip)) return;
-                    
+
                     // 设置临时状态避免重复请求
                     ipCache[ip] = { loading: true };
-                    
+
                     try {
                         const res = await axios.get(`/api/geoip?ip=${ip}`, { headers: { Authorization: `Bearer ${token.value}` } });
                         ipCache[ip] = res.data;
@@ -1020,6 +1127,49 @@ fullContent:
                     if (data.city) parts.push(data.city);
                     if (data.asn) parts.push(`AS${data.asn_number} ${data.asn}`);
                     return parts.join(' - ') || endpoint;
+                };
+
+                const showIpDetailModal = ref(false);
+                const selectedIpInfo = ref({ ip: '', isPrivate: false, loading: false });
+
+                const openIpInfo = async (rawIp) => {
+                    if (!rawIp) return;
+
+                    // 清洗 IP (去除 CIDR 和 端口)
+                    let ip = rawIp.split('/')[0]; // 去除掩码
+
+                    if (ip.startsWith('[')) {
+                        // IPv6 [xxx]:port
+                        ip = ip.split(']:')[0].replace('[', '');
+                    } else if (ip.includes(':')) {
+                        // IPv4:Port (特征是只有一个冒号) vs IPv6 (多个冒号)
+                        const colons = ip.split(':').length - 1;
+                        if (colons < 2) {
+                            ip = ip.split(':')[0];
+                        }
+                    }
+
+                    showIpDetailModal.value = true;
+                    selectedIpInfo.value = { ip, loading: true, isPrivate: false };
+
+                    if (isPrivateIp(ip)) {
+                        selectedIpInfo.value = { ip, isPrivate: true, loading: false };
+                        return;
+                    }
+
+                    // 如果缓存里没有，先请求
+                    if (!ipCache[ip] || ipCache[ip].loading) {
+                        await resolveIpLocation(ip);
+                    }
+
+                    // 从缓存读取结果
+                    const data = ipCache[ip];
+                    if (data) {
+                        selectedIpInfo.value = { ip, isPrivate: false, loading: false, ...data };
+                    } else {
+                        selectedIpInfo.value = { ip, loading: false, error: true };
+                    }
+                    nextTick(() => lucide.createIcons());
                 };
 
                 let mainChartInst = null;
@@ -1122,7 +1272,7 @@ fullContent:
                             // 更新核心数据
                             peers.value = data.peers || [];
                             sysInfo.value = data.system || { cpu_percent: 0, mem_percent: 0 };
-                            
+
                             // 实时更新图表
                             updateRealtimeChart(data.peers);
 
@@ -1192,7 +1342,7 @@ fullContent:
                         .catch(e => {
                             if (e.response?.status === 401) logout();
                         });
-                    
+
                     // 2. 初始化图表历史数据
                     fetchMainChart();
 
@@ -1264,7 +1414,7 @@ fullContent:
                         displayFormat = 'MM-dd';
                     }
 
-                    const labels = data.labels.map(t => t * 1000);
+                    const labels = (data.labels || []).map(t => t * 1000);
                     const maxVal = Math.max(...data.tx, ...data.rx);
                     const suggestedMax = Math.max(maxVal * 1.1, 10);
 
@@ -1357,7 +1507,7 @@ fullContent:
                     detailChartInst = new Chart(ctx, {
                         type: 'line',
                         data: {
-                            labels: data.labels.map(t => t * 1000),
+                            labels: (data.labels || []).map(t => t * 1000),
                             datasets: [{
                                 label: '下载', data: data.rates.rx, borderColor: '#10b981',
                                 backgroundColor: createGradient(ctx, 'rgba(16, 185, 129, 0.1)', 'rgba(16, 185, 129, 0)'),
@@ -1562,7 +1712,7 @@ fullContent:
                         if (res.data.status === 'ok') {
                             showAddModal.value = false;
                             showToast('客户端创建成功');
-                            
+
                             const conf = `[Interface]
 PrivateKey = ${res.data.private_key}
 Address = ${newPeer.ip.split('/')[0]}/32
@@ -1620,9 +1770,9 @@ PersistentKeepalive = 25
                     a.click();
                 };
 
-                const changeMainChartPeriod = () => { 
-                    if (mainChartInst) { mainChartInst.destroy(); mainChartInst = null; } 
-                    fetchMainChart(); 
+                const changeMainChartPeriod = () => {
+                    if (mainChartInst) { mainChartInst.destroy(); mainChartInst = null; }
+                    fetchMainChart();
                 };
                 const changeHistoryPeriod = () => { fetchDetailData(); };
                 const formatLastSeen = (ts) => ts ? new Date(ts * 1000).toLocaleString() : '从不';
@@ -1673,7 +1823,8 @@ PersistentKeepalive = 25
                     showAddModal, showConfigModal, availableConfigs, newPeer, generatedConfigStr, ipLoading, isQrUpdating,
                     openAddModal, createPeer, deletePeer, downloadConfig, suggestIP,
                     showDeleteModal, peerToDelete, deleteLoading, confirmDelete,
-                    accessLogs, logsLoading, fetchAccessLogs, getCountryCode, getGeoTitle
+                    accessLogs, logsLoading, fetchAccessLogs, getCountryCode, getGeoTitle,
+                    showIpDetailModal, selectedIpInfo, openIpInfo
                 };
             }
         }).mount('#app');
@@ -1681,5 +1832,3 @@ PersistentKeepalive = 25
 </body>
 
 </html>
-
-}
