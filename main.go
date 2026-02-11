@@ -107,18 +107,8 @@ type PeerData struct {
 	RxRate        float64   `json:"rx_rate"`
 	TxRate        float64   `json:"tx_rate"`
 	IsOnline      bool      `json:"is_online"`
-	Latency       string    `json:"latency"`
+	LastSeen time.Time
 }
-
-type MapPeerData struct {
-	PeerData
-	Lat         float64 `json:"lat"`
-	Lon         float64 `json:"lon"`
-	City        string  `json:"city"`
-	CountryCode string  `json:"country_code"`
-}
-
-type PeerState struct {
 	LastRx   int64
 	LastTx   int64
 	LastSeen time.Time
@@ -391,6 +381,7 @@ var (
 	trafficBuffer  *TrafficBuffer
 	latencyCache   *LatencyCache
 	metrics        *Metrics
+	analysisEngine *AnalysisEngine
 )
 
 // ================= 主程序 =================
@@ -835,58 +826,16 @@ func getGeoIPInfo(c *gin.Context) {
 
 }
 
-func getMapDataHandler(c *gin.Context) {
-	peers, _, _, err := collectPeersData()
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取客户端数据失败"})
-		return
+	c.JSON(http.StatusOK, resp)
+
+}
+
+// 供 funcs.go 使用的辅助函数
+func getPeerLatency(pk string) string {
+	if latencyCache == nil {
+		return ""
 	}
-
-	var mapData []MapPeerData
-
-    // 预先检查 GeoIP 数据库是否加载
-	hasGeoCity := geoCity != nil
-
-	for _, p := range peers {
-		var lat, lon float64
-		var city, countryCode string
-
-		targetIP := ""
-		if p.Endpoint != "" && p.Endpoint != "未连接" {
-			host, _, err := net.SplitHostPort(p.Endpoint)
-			if err == nil {
-				targetIP = host
-			} else {
-				targetIP = p.Endpoint
-			}
-		}
-
-		if targetIP != "" && hasGeoCity {
-			ip := net.ParseIP(targetIP)
-			if ip != nil {
-				if record, err := geoCity.City(ip); err == nil {
-					lat = record.Location.Latitude
-					lon = record.Location.Longitude
-					if name, ok := record.City.Names["zh-CN"]; ok && name != "" {
-						city = name
-					} else {
-						city = record.City.Names["en"]
-					}
-					countryCode = record.Country.IsoCode
-				}
-			}
-		}
-
-		mapData = append(mapData, MapPeerData{
-			PeerData:    p,
-			Lat:         lat,
-			Lon:         lon,
-			City:        city,
-			CountryCode: countryCode,
-		})
-	}
-
-	c.JSON(http.StatusOK, mapData)
+	return latencyCache.Get(pk)
 }
 
 func isValidConfigName(name string) bool {
@@ -950,6 +899,10 @@ func initDB() error {
 	}
 
 	logger.Println("数据库初始化成功")
+	
+	// 初始化分析引擎
+	analysisEngine = NewAnalysisEngine(db)
+	
 	return nil
 }
 
@@ -1618,8 +1571,8 @@ func setupAPIRoutes(r *gin.Engine) {
 			authorized.GET("/system", getSystemStatus)
 			authorized.POST("/alias", setAlias)
 			authorized.GET("/geoip", getGeoIPInfo)
-			authorized.GET("/map/data", getMapDataHandler)
-			authorized.GET("/analysis", getAnalysisHandler)
+			authorized.GET("/map/data", getMapData)
+			authorized.GET("/analysis", getAdvancedAnalysis)
 
 			manage := authorized.Group("/manage")
 			{
