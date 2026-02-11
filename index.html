@@ -13,8 +13,8 @@
     <script src="/static/js/tailwindcss.js"></script>
     <script src="/static/js/lucide.min.js"></script>
     <script src="/static/js/qrcode.min.js"></script>
-    <script src="//unpkg.com/three"></script>
-    <script src="//unpkg.com/globe.gl"></script>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@4.9.0/map/js/world.js"></script>
     <script src="/static/js/vis-network.min.js"></script>
     <script src="/static/js/advanced_analysis.js"></script>
 
@@ -1609,7 +1609,7 @@
 
                 watch(isDark, () => {
                     if (!showAnalysis.value) return;
-                    if (analysisTab.value === 'map') initMap();
+                    if (analysisTab.value === 'map') initEChartsMap();
                     if (analysisTab.value === 'topology') initTopology();
                     if (analysisTab.value === 'heatmap') initHeatmap();
                 });
@@ -1836,7 +1836,7 @@
                 const initMap = async () => {
                     try {
                         const res = await axios.get('/api/map/data', { headers: { Authorization: `Bearer ${token.value}` } });
-                        window.AdvancedApp.initGlobe('worldMap', res.data);
+                        window.AdvancedApp.initEChartsMap('worldMap', res.data);
                     } catch (e) { console.error(e); }
                 };
 

@@ -4,93 +4,121 @@ window.AdvancedApp = {
     network: null,
     heatmapChart: null,
 
-    // ================= Globe.gl (3D Earth) =================
-    initGlobe(elementId, peerData) {
+    // ================= ECharts Map (2D) =================
+    initEChartsMap(elementId, peerData) {
         if (this.map) {
+            this.map.dispose();
             this.map = null;
         }
 
         const container = document.getElementById(elementId);
         if (!container) return;
-        container.innerHTML = '';
 
+        const chart = echarts.init(container);
         const isDark = document.documentElement.classList.contains('dark');
 
-        // Theme Config
-        const theme = {
-            globeImg: isDark ? '//unpkg.com/three-globe/example/img/earth-night.jpg' : '//unpkg.com/three-globe/example/img/earth-day.jpg',
-            bgImg: isDark ? '//unpkg.com/three-globe/example/img/night-sky.png' : null, // Null = transparent for light mode
-            atmosphere: isDark ? '#3a228a' : '#ffffff',
-            atmosphereAlt: isDark ? 0.25 : 0.15,
-            pointColorOnline: '#10b981',
-            pointColorOffline: isDark ? '#64748b' : '#94a3b8',
-            textColor: isDark ? '#e2e8f0' : '#1e293b',
-            cardBg: isDark ? 'rgba(15,23,42,0.9)' : 'rgba(255,255,255,0.9)'
+        // Theme Colors
+        const colors = {
+            bg: isDark ? 'transparent' : 'transparent', // Let CSS handle background
+            area: isDark ? '#1e293b' : '#cbd5e1',
+            areaBorder: isDark ? '#334155' : '#fff',
+            areaHover: isDark ? '#334155' : '#94a3b8',
+            pointOnline: '#10b981',
+            pointOffline: isDark ? '#64748b' : '#64748b',
+            text: isDark ? '#e2e8f0' : '#334155'
         };
 
-        const globe = Globe()
-            .globeImageUrl(theme.globeImg)
-            .backgroundColor('rgba(0,0,0,0)') // Transparent background to let CSS show through
-            .atmosphereColor(theme.atmosphere)
-            .atmosphereAltitude(theme.atmosphereAlt)
-            .width(container.offsetWidth)
-            .height(container.offsetHeight);
-
-        if (theme.bgImg) {
-            globe.backgroundImageUrl(theme.bgImg);
-        }
-
-        globe(container);
-
-        // --- Data Processing ---
         const pointsData = peerData.filter(p => p.lat && p.lon).map(p => ({
-            lat: parseFloat(p.lat),
-            lng: parseFloat(p.lon),
-            size: 0.5 + (p.rx_rate + p.tx_rate) / 10,
-            color: p.is_online ? theme.pointColorOnline : theme.pointColorOffline,
             name: p.alias || 'Client',
-            ip: p.endpoint,
-            is_online: p.is_online
+            value: [parseFloat(p.lon), parseFloat(p.lat), (p.rx_rate + p.tx_rate)], // value[2] is metric
+            itemStyle: { color: p.is_online ? colors.pointOnline : colors.pointOffline },
+            peer: p // Store full object for tooltip
         }));
 
-        globe
-            .pointsData(pointsData)
-            .pointAltitude(0.01)
-            .pointColor('color')
-            .pointRadius('size')
-            .pointResolution(16)
-            .pointLabel(d => `
-                <div style="background: ${theme.cardBg}; color: ${theme.textColor}; padding: 8px 12px; border-radius: 8px; border: 1px solid rgba(128,128,128,0.1); font-family: sans-serif; font-size: 12px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);">
-                    <strong style="color: ${d.color}; font-size: 14px;">${d.name}</strong><br>
-                    <span style="opacity: 0.7;">${d.ip}</span><br>
-                    <span style="display:inline-block; width:6px; height:6px; background:${d.color}; border-radius:50%; margin-right:4px;"></span>
-                    ${d.is_online ? 'Online' : 'Offline'}
-                </div>
-            `);
+        const option = {
+            backgroundColor: colors.bg,
+            tooltip: {
+                trigger: 'item',
+                backgroundColor: isDark ? 'rgba(15, 23, 42, 0.9)' : 'rgba(255, 255, 255, 0.9)',
+                borderColor: isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)',
+                textStyle: { color: colors.text },
+                formatter: (params) => {
+                    const p = params.data.peer;
+                    if (!p) return params.name;
+                    const isOnline = p.is_online;
+                    const color = isOnline ? '#10b981' : '#94a3b8';
+                    const fmtRate = (v) => v ? v.toFixed(2) + ' Mbps' : '0 Mbps';
 
-        // Rings for Online Peers
-        const ringsData = pointsData.filter(p => p.is_online);
-        globe
-            .ringsData(ringsData)
-            .ringColor(() => theme.pointColorOnline)
-            .ringMaxRadius(5)
-            .ringPropagationSpeed(2)
-            .ringRepeatPeriod(1000);
+                    return `
+                        <div style="font-family: sans-serif; font-size: 12px; min-width: 150px;">
+                            <div style="margin-bottom: 4px; border-bottom: 1px solid ${isDark ? 'rgba(255,255,255,0.1)' : '#eee'}; padding-bottom: 4px;">
+                                <strong style="font-size: 14px;">${p.alias || 'Unknown'}</strong>
+                            </div>
+                            <div style="display:grid; grid-template-columns: auto auto; gap: 4px 12px;">
+                                <span style="opacity:0.7">IP:</span> <span style="font-family:monospace; text-align:right;">${p.endpoint}</span>
+                                <span style="opacity:0.7">Status:</span> <span style="color:${color}; font-weight:bold;">${isOnline ? 'Online' : 'Offline'}</span>
+                                <span style="opacity:0.7">Up:</span> <span style="color:#3b82f6; text-align:right;">${fmtRate(p.tx_rate)}</span>
+                                <span style="opacity:0.7">Down:</span> <span style="color:#10b981; text-align:right;">${fmtRate(p.rx_rate)}</span>
+                            </div>
+                        </div>
+                    `;
+                }
+            },
+            geo: {
+                map: 'world',
+                roam: true,
+                zoom: 1.2,
+                label: { emphasis: { show: false } },
+                itemStyle: {
+                    normal: {
+                        areaColor: colors.area,
+                        borderColor: colors.areaBorder,
+                        borderWidth: 1
+                    },
+                    emphasis: {
+                        areaColor: colors.areaHover
+                    }
+                },
+                silent: true // Map background not clickable to avoid distracting tooltips
+            },
+            series: [
+                {
+                    name: 'Peers',
+                    type: 'effectScatter',
+                    coordinateSystem: 'geo',
+                    data: pointsData,
+                    symbolSize: function (val) {
+                        // Base size 6, plus traffic factor (clamped)
+                        return 6 + Math.min(val[2] / 2, 20);
+                    },
+                    showEffectOn: 'render',
+                    rippleEffect: {
+                        brushType: 'stroke',
+                        scale: 3,
+                        period: 4
+                    },
+                    label: {
+                        formatter: '{b}',
+                        position: 'right',
+                        show: false,
+                        emphasis: { show: true }
+                    },
+                    itemStyle: {
+                        shadowBlur: 10,
+                        shadowColor: '#333'
+                    },
+                    zlevel: 1
+                }
+            ]
+        };
 
-        // Auto-rotate
-        globe.controls().autoRotate = true;
-        globe.controls().autoRotateSpeed = 0.5;
-        globe.pointOfView({ altitude: 2.5 });
+        chart.setOption(option);
 
-        // Handle resize
         window.addEventListener('resize', () => {
-            if (container) {
-                globe.width(container.offsetWidth);
-                globe.height(container.offsetHeight);
-            }
+            chart.resize();
         });
 
-        this.map = globe;
+        this.map = chart;
     },
 
     // ================= Network Topology (Vis.js) =================
