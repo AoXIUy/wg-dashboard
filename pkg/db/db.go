@@ -66,6 +66,11 @@ func InitDB(dsn string) error {
 
 // InitRedis 初始化 Redis
 func InitRedis(addr string) {
+	if addr == "" {
+		log.Println("Redis 地址为空，禁用 Redis 功能 (使用内存模式)")
+		RedisEnabled = false
+		return
+	}
 	RDB = redis.NewClient(&redis.Options{
 		Addr: addr,
 	})

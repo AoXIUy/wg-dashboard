@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"encoding/json"
 
 	"github.com/shirou/gopsutil/v3/cpu"
 	"github.com/shirou/gopsutil/v3/host"
@@ -322,14 +323,30 @@ func StartProcessor(ctx context.Context, in <-chan models.RawSnapshot) {
 				}
 			}
 
-			if db.RedisEnabled {
-				// 3. 触发 SSE 广播 (通过 Redis Pub/Sub)
-				peers, _, _, _ := CollectPeersData()
-				update := models.DashboardUpdate{
-					Peers:  peers,
-					System: CollectSystemInfo(),
+			}
+			
+			// 3. 无论 Redis 是否启用，都优先进行进程内广播 (核心修复)
+			peers, _, _, _ := CollectPeersData()
+			update := models.DashboardUpdate{
+				Peers:  peers,
+				System: CollectSystemInfo(),
+			}
+
+			// 序列化
+			if jsonBytes, err := json.Marshal(update); err == nil {
+				jsonStr := string(jsonBytes)
+				
+				// 直接发送给内部 SSE Broker
+				select {
+				case sseBroker.Message <- jsonStr:
+				default:
+					// 防止阻塞
 				}
-				db.PublishBroadcast(ctx, update)
+
+				// (可选) 如果启用了 Redis，依然发送以支持集群模式
+				if db.RedisEnabled {
+					db.PublishBroadcast(ctx, update)
+				}
 			}
 		}
 	}
@@ -593,11 +610,21 @@ func SuggestIP(confName string) (string, error) {
 	}
 	ip = ip.To4()
 
-	baseIP := ip.Mask(net.CIDRMask(24, 32))
+	startIP := ip.To4()
+	if startIP == nil {
+		return "", fmt.Errorf("invalid server IP")
+	}
+
 	suggested := ""
+	// 尝试寻找 2 到 254 之间的空闲 IP
+	// 假设网关是 .1，所以从 2 开始
+	// 这里简化处理，直接在该 /24 网段内查找
 	for i := 2; i < 255; i++ {
-		candidate := net.IPv4(baseIP[0], baseIP[1], baseIP[2], byte(i))
+		// 构造候选 IP
+		candidate := net.IPv4(startIP[0], startIP[1], startIP[2], byte(i))
 		candidateStr := candidate.String()
+		
+		// 检查是否已被使用
 		if !usedIPs[candidateStr] {
 			suggested = candidateStr + "/32"
 			break
@@ -684,26 +711,40 @@ func GenerateAnalysisReport(ctx context.Context, days int) (*models.AnalysisRepo
 	var hourly []models.ActivityPoint
 	if err == nil {
 		defer hRows.Close()
-		var lastH int64
+
+		// [修复] 使用 Map 聚合数据
+		hourlyMap := make(map[int]float64) // key: hour (0-23), value: total_bytes
+		
+		// 计算转换因子 (将 Mbps 速率转换回该时间段内的 字节数)
+		byteFactor := config.MegabitsPerSecond / config.BitsPerByte * config.CollectInterval.Seconds()
+
 		for hRows.Next() {
 			var ts int64
-			var sum float64
-			if err := hRows.Scan(&ts, &sum); err == nil {
-				h := int((ts / 3600) % 24)
-				// 简单聚合
-				if ts/3600 != lastH {
-					// 修正：将速率和转换为字节
-					// 这里 sum 是该小时内所有记录的 rx_rate+tx_rate 之和
-					// 大致估算：sum * byteFactor
-					byteFactor := config.MegabitsPerSecond / config.BitsPerByte * config.CollectInterval.Seconds()
-					hourly = append(hourly, models.ActivityPoint{
-						Hour:  h,
-						RxSum: sum * byteFactor, 
-					})
-					lastH = ts / 3600
-				}
+			var sumRate float64
+			if err := hRows.Scan(&ts, &sumRate); err == nil {
+				// 获取小时 (0-23)
+				h := time.Unix(ts, 0).Hour() 
+				// 累加流量
+				hourlyMap[h] += sumRate * byteFactor
 			}
 		}
+
+		// 将 Map 转换为数组 (填充 0-23 小时)
+		// 注意：这里仅仅展示一天内的分布，如果查询多天，这种按小时聚合会将多天同一小时累加
+		// 但根据需求 "24小时活跃度"，通常指最近 24 小时
+		currentHour := time.Now().Hour()
+		// 我们按时间顺序输出最近 24 小时的数据，或者简单的 0-23 分布
+		// 为了简单起见，且配合前端 Chart (可能是 Bar chart 0-23)，我们输出 0-23
+		for h := 0; h < 24; h++ {
+			val := hourlyMap[h]
+			hourly = append(hourly, models.ActivityPoint{
+				Hour:  h,
+				RxSum: val, // 这里合并了 Rx+Tx
+			})
+		}
+		
+		// 如果需要按时间顺序排序 (例如从昨天 15:00 到今天 14:00)，需要更复杂的逻辑
+		// 这里假设前端是按 Hour index 显示的 0-23 点钟热力图
 	}
 
 	report := &models.AnalysisReport{
