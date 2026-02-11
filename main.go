@@ -107,6 +107,7 @@ type PeerData struct {
 	RxRate        float64   `json:"rx_rate"`
 	TxRate        float64   `json:"tx_rate"`
 	IsOnline      bool      `json:"is_online"`
+	Latency       string    `json:"latency"`
 	LastSeen time.Time
 }
 
