@@ -110,6 +110,14 @@ type PeerData struct {
 	Latency       string    `json:"latency"`
 }
 
+type MapPeerData struct {
+	PeerData
+	Lat         float64 `json:"lat"`
+	Lon         float64 `json:"lon"`
+	City        string  `json:"city"`
+	CountryCode string  `json:"country_code"`
+}
+
 type PeerState struct {
 	LastRx   int64
 	LastTx   int64
@@ -824,6 +832,61 @@ func getGeoIPInfo(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, resp)
+
+}
+
+func getMapDataHandler(c *gin.Context) {
+	peers, _, _, err := collectPeersData()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取客户端数据失败"})
+		return
+	}
+
+	var mapData []MapPeerData
+
+    // 预先检查 GeoIP 数据库是否加载
+	hasGeoCity := geoCity != nil
+
+	for _, p := range peers {
+		var lat, lon float64
+		var city, countryCode string
+
+		targetIP := ""
+		if p.Endpoint != "" && p.Endpoint != "未连接" {
+			host, _, err := net.SplitHostPort(p.Endpoint)
+			if err == nil {
+				targetIP = host
+			} else {
+				targetIP = p.Endpoint
+			}
+		}
+
+		if targetIP != "" && hasGeoCity {
+			ip := net.ParseIP(targetIP)
+			if ip != nil {
+				if record, err := geoCity.City(ip); err == nil {
+					lat = record.Location.Latitude
+					lon = record.Location.Longitude
+					if name, ok := record.City.Names["zh-CN"]; ok && name != "" {
+						city = name
+					} else {
+						city = record.City.Names["en"]
+					}
+					countryCode = record.Country.IsoCode
+				}
+			}
+		}
+
+		mapData = append(mapData, MapPeerData{
+			PeerData:    p,
+			Lat:         lat,
+			Lon:         lon,
+			City:        city,
+			CountryCode: countryCode,
+		})
+	}
+
+	c.JSON(http.StatusOK, mapData)
 }
 
 func isValidConfigName(name string) bool {
@@ -1555,6 +1618,7 @@ func setupAPIRoutes(r *gin.Engine) {
 			authorized.GET("/system", getSystemStatus)
 			authorized.POST("/alias", setAlias)
 			authorized.GET("/geoip", getGeoIPInfo)
+			authorized.GET("/map/data", getMapDataHandler)
 			authorized.GET("/analysis", getAnalysisHandler)
 
 			manage := authorized.Group("/manage")
