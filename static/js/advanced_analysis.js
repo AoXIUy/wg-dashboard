@@ -7,40 +7,47 @@ window.AdvancedApp = {
     // ================= Globe.gl (3D Earth) =================
     initGlobe(elementId, peerData) {
         if (this.map) {
-            // Globe.gl integrated into Three.js scene, minimal cleanup needed if overwriting container
-            // But we can stop animation loop if accessible.
-            // For now, simpler to just clear container and rebuild.
             this.map = null;
         }
 
         const container = document.getElementById(elementId);
         if (!container) return;
-        container.innerHTML = ''; // Clear Leaflet or previous Globe
+        container.innerHTML = '';
+
+        const isDark = document.documentElement.classList.contains('dark');
+
+        // Theme Config
+        const theme = {
+            globeImg: isDark ? '//unpkg.com/three-globe/example/img/earth-night.jpg' : '//unpkg.com/three-globe/example/img/earth-day.jpg',
+            bgImg: isDark ? '//unpkg.com/three-globe/example/img/night-sky.png' : null, // Null = transparent for light mode
+            atmosphere: isDark ? '#3a228a' : '#ffffff',
+            atmosphereAlt: isDark ? 0.25 : 0.15,
+            pointColorOnline: '#10b981',
+            pointColorOffline: isDark ? '#64748b' : '#94a3b8',
+            textColor: isDark ? '#e2e8f0' : '#1e293b',
+            cardBg: isDark ? 'rgba(15,23,42,0.9)' : 'rgba(255,255,255,0.9)'
+        };
 
         const globe = Globe()
-            .globeImageUrl('//unpkg.com/three-globe/example/img/earth-night.jpg')
-            .backgroundImageUrl('//unpkg.com/three-globe/example/img/night-sky.png')
-            .atmosphereColor('#3a228a')
-            .atmosphereAltitude(0.25)
+            .globeImageUrl(theme.globeImg)
+            .backgroundColor('rgba(0,0,0,0)') // Transparent background to let CSS show through
+            .atmosphereColor(theme.atmosphere)
+            .atmosphereAltitude(theme.atmosphereAlt)
             .width(container.offsetWidth)
-            .height(container.offsetHeight)
-            (container);
+            .height(container.offsetHeight);
 
-        // --- Data Processing for Globe ---
-        // 1. Peer Points (Cylinders)
-        // 2. Rings (Online status)
-        // 3. Arcs (Server <-> Client)
+        if (theme.bgImg) {
+            globe.backgroundImageUrl(theme.bgImg);
+        }
 
-        // Server location (approximate or fixed center)
-        // Ideally we should have server lat/lon. For now, let's assume server is at [0,0] or iterate to find "server" in peerData if it exists
-        // Actually peerData usually contains only peers. Let's assume server is visually "everywhere" or just connect peers to each other?
-        // Let's visualize Peers as the primary entities.
+        globe(container);
 
+        // --- Data Processing ---
         const pointsData = peerData.filter(p => p.lat && p.lon).map(p => ({
             lat: parseFloat(p.lat),
             lng: parseFloat(p.lon),
-            size: 0.5 + (p.rx_rate + p.tx_rate) / 10, // Size based on traffic
-            color: p.is_online ? '#10b981' : '#64748b',
+            size: 0.5 + (p.rx_rate + p.tx_rate) / 10,
+            color: p.is_online ? theme.pointColorOnline : theme.pointColorOffline,
             name: p.alias || 'Client',
             ip: p.endpoint,
             is_online: p.is_online
@@ -53,7 +60,7 @@ window.AdvancedApp = {
             .pointRadius('size')
             .pointResolution(16)
             .pointLabel(d => `
-                <div style="background: rgba(15,23,42,0.9); color: #e2e8f0; padding: 8px 12px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.1); font-family: sans-serif; font-size: 12px;">
+                <div style="background: ${theme.cardBg}; color: ${theme.textColor}; padding: 8px 12px; border-radius: 8px; border: 1px solid rgba(128,128,128,0.1); font-family: sans-serif; font-size: 12px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);">
                     <strong style="color: ${d.color}; font-size: 14px;">${d.name}</strong><br>
                     <span style="opacity: 0.7;">${d.ip}</span><br>
                     <span style="display:inline-block; width:6px; height:6px; background:${d.color}; border-radius:50%; margin-right:4px;"></span>
@@ -65,7 +72,7 @@ window.AdvancedApp = {
         const ringsData = pointsData.filter(p => p.is_online);
         globe
             .ringsData(ringsData)
-            .ringColor(() => '#10b981')
+            .ringColor(() => theme.pointColorOnline)
             .ringMaxRadius(5)
             .ringPropagationSpeed(2)
             .ringRepeatPeriod(1000);
@@ -73,7 +80,7 @@ window.AdvancedApp = {
         // Auto-rotate
         globe.controls().autoRotate = true;
         globe.controls().autoRotateSpeed = 0.5;
-        globe.pointOfView({ altitude: 2.5 }); // Zoom out a bit
+        globe.pointOfView({ altitude: 2.5 });
 
         // Handle resize
         window.addEventListener('resize', () => {

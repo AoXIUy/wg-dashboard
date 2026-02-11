@@ -1607,6 +1607,13 @@
 
                 watch(searchQuery, debounce((val) => { debouncedSearch.value = val; }, 300));
 
+                watch(isDark, () => {
+                    if (!showAnalysis.value) return;
+                    if (analysisTab.value === 'map') initMap();
+                    if (analysisTab.value === 'topology') initTopology();
+                    if (analysisTab.value === 'heatmap') initHeatmap();
+                });
+
                 const sortCache = ref(new Map());
                 const lastSortTime = ref(0);
                 const sortedPeers = computed(() => {
