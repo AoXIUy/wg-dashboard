@@ -1,8 +1,8 @@
 package handlers
 
 import (
-	"log"
 	"net/http"
+	"io"
 	"os"
 	"strconv"
 	"time"
@@ -91,11 +91,13 @@ func GetAnalysisReport(c *gin.Context) {
 	}
 
 	// 缓存未命中，调用 Service 生成
-	report, err = service.GenerateAnalysisReport(c.Request.Context(), days)
+	r, err := service.GenerateAnalysisReport(c.Request.Context(), days)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "生成报告失败"})
 		return
 	}
+	// dereference pointer
+	report = *r
 	c.JSON(http.StatusOK, report)
 }
 
@@ -191,6 +193,17 @@ func GetPeerHistory(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, history)
+}
+
+// GetPeerLogs Handler
+func GetPeerLogs(c *gin.Context) {
+	pk := c.Param("publickey")
+	logs, err := service.GetPeerAccessLogs(pk)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询日志失败"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"logs": logs})
 }
 
 // DeletePeer Handler

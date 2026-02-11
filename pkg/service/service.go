@@ -2,13 +2,13 @@ package service
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net"
 	"os"
 	"os/exec"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -820,6 +820,28 @@ func GetGlobalTrafficChart(period string) (map[int64]interface{}, error) {
 		}
 	}
 	return result, nil
+}
+
+// GetPeerAccessLogs 获取 Peer 访问日志
+func GetPeerAccessLogs(pk string) ([]models.ProcessedLog, error) {
+	// 获取最近 24 小时的日志
+	since := time.Now().Add(-24 * time.Hour).Unix()
+	rows, err := db.GetAccessLogsQuery(pk, since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var logs []models.ProcessedLog
+	for rows.Next() {
+		var l models.ProcessedLog
+		if err := rows.Scan(&l.Timestamp, &l.Endpoint, &l.RxBytes, &l.TxBytes); err != nil {
+			continue
+		}
+		l.PublicKey = pk
+		logs = append(logs, l)
+	}
+	return logs, nil
 }
 
 // RemovePeer 删除 Peer

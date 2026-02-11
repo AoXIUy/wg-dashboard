@@ -10,11 +10,9 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/oschwald/geoip2-golang"
 
 	"wg-dashboard/pkg/config"
 	"wg-dashboard/pkg/db"
@@ -134,7 +132,8 @@ func main() {
 			auth.GET("/analysis", handlers.GetAnalysisReport)
 			auth.GET("/chart/traffic", handlers.GetTrafficChart)
 			auth.POST("/peer", handlers.AddPeer)
-			auth.GET("/peer/:publickey/history", handlers.GetPeerHistory)
+			auth.GET("/history/:publickey", handlers.GetPeerHistory)
+			auth.GET("/history/logs/:publickey", handlers.GetPeerLogs)
 			auth.DELETE("/peer/:publickey", handlers.DeletePeer)
 			auth.POST("/peer/:publickey/alias", handlers.UpdateAlias)
 			auth.GET("/geoip", handlers.GetIPInfo)
