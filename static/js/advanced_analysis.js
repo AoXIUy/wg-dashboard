@@ -28,12 +28,43 @@ window.AdvancedApp = {
             text: isDark ? '#e2e8f0' : '#334155'
         };
 
-        const pointsData = peerData.filter(p => p.lat && p.lon).map(p => ({
-            name: p.alias || 'Client',
-            value: [parseFloat(p.lon), parseFloat(p.lat), (p.rx_rate + p.tx_rate)], // value[2] is metric
-            itemStyle: { color: p.is_online ? colors.pointOnline : colors.pointOffline },
-            peer: p // Store full object for tooltip
-        }));
+        // Group peers by location to handle overlaps
+        const groups = {};
+        peerData.forEach(p => {
+            if (p.lat && p.lon) {
+                const key = `${p.lat},${p.lon}`;
+                if (!groups[key]) groups[key] = [];
+                groups[key].push(p);
+            }
+        });
+
+        const pointsData = [];
+        Object.keys(groups).forEach(key => {
+            const list = groups[key];
+            const baseLat = parseFloat(list[0].lat);
+            const baseLon = parseFloat(list[0].lon);
+
+            list.forEach((p, index) => {
+                let lat = baseLat;
+                let lon = baseLon;
+
+                // Apply circular layout offset if multiple peers share the same location
+                // 0.8 degrees is visible enough on world map without being too far
+                if (list.length > 1) {
+                    const angle = (index / list.length) * Math.PI * 2;
+                    const radius = 0.8;
+                    lat = baseLat + (Math.cos(angle) * radius);
+                    lon = baseLon + (Math.sin(angle) * radius);
+                }
+
+                pointsData.push({
+                    name: p.alias || 'Client',
+                    value: [lon, lat, (p.rx_rate + p.tx_rate)], // value[2] is metric
+                    itemStyle: { color: p.is_online ? colors.pointOnline : colors.pointOffline },
+                    peer: p // Store full object for tooltip
+                });
+            });
+        });
 
         const option = {
             backgroundColor: colors.bg,
@@ -50,12 +81,13 @@ window.AdvancedApp = {
                     const fmtRate = (v) => v ? v.toFixed(2) + ' Mbps' : '0 Mbps';
 
                     return `
-                        <div style="font-family: sans-serif; font-size: 12px; min-width: 150px;">
+                        <div style="font-family: sans-serif; font-size: 12px; min-width: 180px;">
                             <div style="margin-bottom: 4px; border-bottom: 1px solid ${isDark ? 'rgba(255,255,255,0.1)' : '#eee'}; padding-bottom: 4px;">
                                 <strong style="font-size: 14px;">${p.alias || 'Unknown'}</strong>
                             </div>
                             <div style="display:grid; grid-template-columns: auto auto; gap: 4px 12px;">
                                 <span style="opacity:0.7">IP:</span> <span style="font-family:monospace; text-align:right;">${p.endpoint}</span>
+                                <span style="opacity:0.7">Location:</span> <span style="text-align:right;">${p.city || '-'}, ${p.country_code || '-'}</span>
                                 <span style="opacity:0.7">Status:</span> <span style="color:${color}; font-weight:bold;">${isOnline ? 'Online' : 'Offline'}</span>
                                 <span style="opacity:0.7">Up:</span> <span style="color:#3b82f6; text-align:right;">${fmtRate(p.tx_rate)}</span>
                                 <span style="opacity:0.7">Down:</span> <span style="color:#10b981; text-align:right;">${fmtRate(p.rx_rate)}</span>
