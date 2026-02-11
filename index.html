@@ -1807,9 +1807,21 @@
                 const analysisTab = ref('overview');
                 const changeAnalysisTab = async (tab) => {
                     analysisTab.value = tab;
+                    // 等待 Vue 更新 DOM
                     await nextTick();
-                    if (tab === 'map') initMap();
-                    if (tab === 'topology') initTopology();
+
+                    if (tab === 'map') {
+                        // 给 Leaflet 一点时间调整大小
+                        setTimeout(() => initMap(), 100);
+                    }
+
+                    if (tab === 'topology') {
+                        // [修复] 增加延时，确保 Flex 布局计算完毕，容器有实际高度后再初始化
+                        setTimeout(() => {
+                            initTopology();
+                        }, 100);
+                    }
+
                     if (tab === 'heatmap') initHeatmap();
                 };
 
