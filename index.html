@@ -918,6 +918,29 @@
                                             </div>
                                             <div
                                                 class="flex justify-between py-2 border-b border-slate-100 dark:border-white/5">
+                                                <span class="text-slate-500">地区</span>
+                                                <span class="text-slate-700 dark:text-slate-200">{{
+                                                    selectedNode.city ? (selectedNode.city + ', ' +
+                                                    selectedNode.country) : '-' }}</span>
+                                            </div>
+                                            <div
+                                                class="flex justify-between py-2 border-b border-slate-100 dark:border-white/5">
+                                                <span class="text-slate-500">端点</span>
+                                                <span
+                                                    class="font-mono text-xs text-slate-600 dark:text-slate-400 truncate max-w-[160px]"
+                                                    :title="selectedNode.endpoint">{{ selectedNode.endpoint || '-'
+                                                    }}</span>
+                                            </div>
+                                            <div
+                                                class="flex justify-between py-2 border-b border-slate-100 dark:border-white/5">
+                                                <span class="text-slate-500">延迟</span>
+                                                <div class="flex items-center gap-2">
+                                                    <span class="font-mono text-emerald-600 dark:text-emerald-400">{{
+                                                        selectedNode.latency || '-' }}</span>
+                                                </div>
+                                            </div>
+                                            <div
+                                                class="flex justify-between py-2 border-b border-slate-100 dark:border-white/5">
                                                 <span class="text-slate-500">累计上传</span>
                                                 <span class="font-mono text-blue-600 dark:text-blue-400">{{
                                                     fmtBytes(selectedNode.tx) }}</span>
@@ -934,9 +957,14 @@
                                                 <span class="text-slate-600 dark:text-slate-300">{{
                                                     formatLastSeen(selectedNode.lastSeen) }}</span>
                                             </div>
+                                            <div
+                                                class="flex justify-between py-2 border-b border-slate-100 dark:border-white/5">
+                                                <span class="text-slate-500">最后握手</span>
+                                                <span class="text-slate-600 dark:text-slate-300">{{
+                                                    formatLastSeen(selectedNode.latestHandshake) }}</span>
+                                            </div>
                                         </div>
                                     </div>
-                                </div>
                             </Transition>
                         </div>
 

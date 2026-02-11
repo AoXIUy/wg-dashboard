@@ -158,6 +158,7 @@ type PeerAnalysis struct {
 	CountryCode     string   `json:"country_code"`
 	Latency         string   `json:"latency"`
 	LatestHandshake int64    `json:"latest_handshake"`
+	IsOnline        bool     `json:"is_online"`
 }
 
 type ActivityPoint struct {
@@ -2062,6 +2063,11 @@ func generateAnalysisReport(ctx context.Context, days int) (*AnalysisReport, err
 			latestHandshake = lp.LastHandshakeTime.Unix()
 		}
 
+		isOnline := false
+		if time.Since(time.Unix(latestHandshake, 0)) < 3*time.Minute {
+			isOnline = true
+		}
+
 		// 如果没有实时 Endpoint (如离线)，尝试查找最近的访问日志
 		if endpointStr == "" {
 			var lastEp string
@@ -2109,6 +2115,7 @@ func generateAnalysisReport(ctx context.Context, days int) (*AnalysisReport, err
 			CountryCode:     countryCode,
 			Latency:         latency,
 			LatestHandshake: latestHandshake,
+			IsOnline:        isOnline,
 		})
 	}
 

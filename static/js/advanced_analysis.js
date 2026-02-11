@@ -247,7 +247,18 @@ window.AdvancedApp = {
                 shape: 'dot',
                 font: { color: document.documentElement.classList.contains('dark') ? '#94a3b8' : '#64748b', size: 12, face: 'Inter', strokeWidth: 0, strokeColor: '#fff' },
                 title: tooltipContent,
-                shadow: { enabled: true, color: 'rgba(0,0,0,0.1)', size: 10, x: 5, y: 5 }
+                shadow: { enabled: true, color: 'rgba(0,0,0,0.1)', size: 10, x: 5, y: 5 },
+                // Custom Data for Side Panel
+                ip: p.allowed_ips ? p.allowed_ips[0] : '',
+                online: isOnline,
+                rx: p.total_rx,
+                tx: p.total_tx,
+                lastSeen: p.last_seen_time,
+                city: p.city,
+                country: p.country_code,
+                latency: p.latency,
+                latestHandshake: p.latest_handshake,
+                endpoint: p.endpoint
             });
 
             // Edge Style
