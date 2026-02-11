@@ -104,38 +104,59 @@ window.AdvancedApp = {
 
             const label = p.alias || p.public_key.substring(0, 4);
 
-            // Rich Tooltip (HTML)
+            // Rich Tooltip (Glass Card)
             const tooltipContent = document.createElement('div');
-            tooltipContent.className = 'p-2 text-xs font-sans';
+            tooltipContent.className = 'glass-card p-3 rounded-xl text-xs font-sans shadow-xl backdrop-blur-md bg-white/80 dark:bg-slate-900/80 border border-white/20 dark:border-white/10 text-slate-700 dark:text-slate-200';
+            tooltipContent.style.minWidth = '200px';
             tooltipContent.innerHTML = `
-                <div class="font-bold text-sm mb-1">${p.alias || 'Unknown'}</div>
-                <div class="text-gray-400 font-mono mb-2">${p.public_key.substring(0, 12)}...</div>
-                <div class="grid grid-cols-2 gap-2">
-                    <div><span class="text-gray-500">IP:</span> ${p.allowed_ips ? p.allowed_ips[0] : 'N/A'}</div>
-                    <div><span class="text-gray-500">Loc:</span> ${p.city || '-'}, ${p.country_code || '-'}</div>
-                    <div><span class="text-emerald-500">Rx:</span> ${fmtRate(rxRate)}</div>
-                    <div><span class="text-blue-500">Tx:</span> ${fmtRate(txRate)}</div>
-                    <div><span class="text-gray-500">Total:</span> ${fmtBytes(p.total_rx + p.total_tx)}</div>
-                    <div><span class="text-gray-500">State:</span> ${isOnline ? '<span class="text-green-500">Online</span>' : '<span class="text-gray-500">Offline</span>'}</div>
+                <div class="flex items-center gap-2 mb-2 border-b border-slate-200 dark:border-white/10 pb-2">
+                    <div class="w-2 h-2 rounded-full ${isOnline ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.6)]' : 'bg-slate-400'}"></div>
+                    <div class="font-bold text-sm text-slate-800 dark:text-white">${p.alias || '未命名'}</div>
+                </div>
+                <div class="grid grid-cols-2 gap-y-1 gap-x-3 mb-1">
+                    <div class="text-slate-500">IP:</div>
+                    <div class="font-mono text-right truncate">${p.allowed_ips ? p.allowed_ips[0] : '-'}</div>
+                    
+                    <div class="text-slate-500">地区:</div>
+                    <div class="text-right truncate">${p.city || '-'}, ${p.country_code || '-'}</div>
+                    
+                    <div class="col-span-2 my-1 h-[1px] bg-slate-100 dark:bg-white/5"></div>
+                    
+                    <div class="text-emerald-600 dark:text-emerald-400 flex items-center gap-1"><i data-lucide="arrow-down" class="w-3 h-3"></i>下载:</div>
+                    <div class="font-mono text-right font-bold text-emerald-600 dark:text-emerald-400">${fmtRate(rxRate)}</div>
+                    
+                    <div class="text-blue-600 dark:text-blue-400 flex items-center gap-1"><i data-lucide="arrow-up" class="w-3 h-3"></i>上传:</div>
+                    <div class="font-mono text-right font-bold text-blue-600 dark:text-blue-400">${fmtRate(txRate)}</div>
+                    
+                    <div class="text-slate-500">总流量:</div>
+                    <div class="font-mono text-right">${fmtBytes(p.total_rx + p.total_tx)}</div>
+                </div>
+                <div class="text-[10px] text-slate-400 font-mono mt-2 text-center bg-slate-50 dark:bg-slate-800/50 rounded py-1">
+                    ${p.public_key.substring(0, 16)}...
                 </div>
             `;
 
             nodes.add({
                 id: p.public_key,
                 label: label,
-                color: { background: color, border: '#fff', highlight: { border: '#3b82f6', background: color } },
-                size: isOnline ? 20 + Math.min(totalRate, 20) : 15, // Dynamic size based on traffic
+                color: {
+                    background: color,
+                    border: isOnline ? '#fff' : '#cbd5e1',
+                    highlight: { border: '#3b82f6', background: color }
+                },
+                size: isOnline ? 20 + Math.min(totalRate, 30) : 15,
                 shape: 'dot',
-                font: { color: '#94a3b8', size: 12, face: 'Inter' },
-                title: tooltipContent // Vis.js supports DOM elements for title
+                font: { color: document.documentElement.classList.contains('dark') ? '#94a3b8' : '#64748b', size: 12, face: 'Inter', strokeWidth: 0, strokeColor: '#fff' },
+                title: tooltipContent,
+                shadow: { enabled: true, color: 'rgba(0,0,0,0.1)', size: 10, x: 5, y: 5 }
             });
 
             // Edge Style
             edges.add({
                 from: 'server',
                 to: p.public_key,
-                color: { color: isOnline ? '#94a3b8' : '#e2e8f0', opacity: isOnline ? 0.6 : 0.3, highlight: '#3b82f6' },
-                width: isOnline ? 1 + Math.min(totalRate / 5, 10) : 1, // Dynamic width based on traffic
+                color: { color: isOnline ? '#94a3b8' : '#e2e8f0', opacity: isOnline ? 0.4 : 0.1, highlight: '#3b82f6' },
+                width: isOnline ? 1 + Math.min(totalRate / 5, 8) : 1,
                 dashes: !isOnline,
                 smooth: { type: 'continuous', roundness: 0.5 }
             });
