@@ -825,7 +825,7 @@
                             </div>
                         </div>
 
-                        <div v-show="analysisTab==='map'" class="relative w-full h-full bg-slate-50 dark:bg-[#0b1121]">
+                        <div v-show="analysisTab==='map'" class="relative w-full h-full min-h-[500px]">
                             <div id="worldMap" class="absolute inset-0 z-0"></div>
                         </div>
 
@@ -1808,8 +1808,6 @@
                 const changeAnalysisTab = async (tab) => {
                     analysisTab.value = tab;
                     await nextTick();
-                    // 强制重新计算布局
-                    window.dispatchEvent(new Event('resize'));
                     if (tab === 'map') initMap();
                     if (tab === 'topology') initTopology();
                     if (tab === 'heatmap') initHeatmap();
@@ -1830,11 +1828,6 @@
                     const container = document.getElementById('networkTopology');
                     if (!container) return;
 
-                    // 清理旧实例及观察者
-                    if (window.topologyResizeObserver) {
-                        window.topologyResizeObserver.disconnect();
-                        window.topologyResizeObserver = null;
-                    }
                     if (networkInstance) {
                         networkInstance.destroy();
                         networkInstance = null;
@@ -1927,14 +1920,6 @@
 
                     const data = { nodes: new vis.DataSet(nodes), edges: new vis.DataSet(edges) };
                     networkInstance = new vis.Network(container, data, options);
-
-                    // 添加尺寸监听
-                    window.topologyResizeObserver = new ResizeObserver(() => {
-                        if (networkInstance) {
-                            networkInstance.fit();
-                        }
-                    });
-                    window.topologyResizeObserver.observe(container);
 
                     networkInstance.on("click", function (params) {
                         if (params.nodes.length > 0) {
@@ -2276,10 +2261,6 @@ PersistentKeepalive = 25
                 });
 
                 onUnmounted(() => {
-                    if (window.topologyResizeObserver) {
-                        window.topologyResizeObserver.disconnect();
-                        window.topologyResizeObserver = null;
-                    }
                     if (es.value) es.value.close();
                     [mainChartInst, detailChartInst, pieChart, barChart].forEach(c => c?.destroy());
                     if (networkInstance) networkInstance.destroy();
