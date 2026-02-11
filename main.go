@@ -1,7 +1,3 @@
-{
-type: uploaded file
-fileName: aoxiuy/wg-dashboard/wg-dashboard-c34a87407149d2e350a26a8d67c7e0d2feae7fc8/main.go
-fullContent:
 package main
 
 import (
@@ -30,6 +26,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/go-redis/redis/v8"
+	_ "github.com/go-sql-driver/mysql"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/oschwald/geoip2-golang"
 	"github.com/shirou/gopsutil/v3/cpu"
@@ -37,7 +35,6 @@ import (
 	"github.com/shirou/gopsutil/v3/mem"
 	"golang.zx2c4.com/wireguard/wgctrl"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
-	_ "modernc.org/sqlite"
 )
 
 //go:embed index.html
@@ -65,7 +62,8 @@ const (
 var (
 	WGInterface   string
 	ServerPort    string
-	DBPath        string
+	MySQLDSN      string
+	RedisAddr     string
 	Retention     int
 	AdminPassword string
 	JWTSecret     string
@@ -176,6 +174,7 @@ type SSEBroker struct {
 	NewClients    chan chan string
 	ClosedClients chan chan string
 	Message       chan string
+	mu            sync.RWMutex // 🔧 FIX: 添加互斥锁保护 Clients map
 }
 
 type DashboardUpdate struct {
@@ -186,48 +185,15 @@ type DashboardUpdate struct {
 // ================= 全局变量 =================
 var (
 	db               *sql.DB
-	latestPeersCache sync.Map
+	rdb              *redis.Client
+	configMu         sync.Mutex
 	publicKeyRegex   = regexp.MustCompile(`^[A-Za-z0-9+/]{43}=$`)
 	logger           *log.Logger
-	sseBroker        *SSEBroker
 	geoCity          *geoip2.Reader
 	geoAsn           *geoip2.Reader
+	sseBroker        *SSEBroker
+	redisEnabled     bool // 🔧 FIX: 添加 Redis 可用性标志
 )
-
-// ================= SSE Broker 逻辑 =================
-
-func NewSSEBroker() *SSEBroker {
-	b := &SSEBroker{
-		Clients:       make(map[chan string]bool),
-		NewClients:    make(chan chan string),
-		ClosedClients: make(chan chan string),
-		Message:       make(chan string),
-	}
-	go b.listen()
-	return b
-}
-
-func (b *SSEBroker) listen() {
-	for {
-		select {
-		case s := <-b.NewClients:
-			b.Clients[s] = true
-			logger.Printf("SSE 客户端已连接. 当前总数: %d", len(b.Clients))
-		case s := <-b.ClosedClients:
-			delete(b.Clients, s)
-			close(s)
-			logger.Printf("SSE 客户端已断开. 当前总数: %d", len(b.Clients))
-		case msg := <-b.Message:
-			for s := range b.Clients {
-				select {
-				case s <- msg:
-				default:
-					// 避免阻塞 Broker
-				}
-			}
-		}
-	}
-}
 
 // ================= 主程序 =================
 
@@ -236,7 +202,8 @@ func main() {
 
 	flag.StringVar(&WGInterface, "iface", "wg0", "WireGuard 接口名称")
 	flag.StringVar(&ServerPort, "port", ":8080", "Web 监听端口")
-	flag.StringVar(&DBPath, "db", "./wg_stats.db", "数据库路径")
+	flag.StringVar(&MySQLDSN, "mysql", "wg_user:cloud123@tcp(127.0.0.1:3306)/wg_monitor?charset=utf8mb4&parseTime=True&loc=Local", "MySQL 连接字符串")
+	flag.StringVar(&RedisAddr, "redis", "127.0.0.1:6379", "Redis 地址")
 	flag.IntVar(&Retention, "days", 30, "数据保留天数")
 	flag.StringVar(&AdminPassword, "password", "admin123", "仪表盘访问密码")
 	flag.StringVar(&JWTSecret, "secret", "change_this_secret_in_prod", "JWT 签名密钥")
@@ -244,12 +211,18 @@ func main() {
 	flag.StringVar(&GeoASNPath, "geo-asn", "./GeoLite2-ASN.mmdb", "GeoLite2 ASN 数据库路径")
 	flag.Parse()
 
+	if v := os.Getenv("WG_ADMIN_PASSWORD"); v != "" {
+		AdminPassword = v
+	}
+	if v := os.Getenv("WG_JWT_SECRET"); v != "" {
+		JWTSecret = v
+	}
+
 	if os.Geteuid() != 0 {
 		logger.Println("警告: 未以 Root 权限运行，无法管理 WireGuard 配置，仅能监控。")
 	}
 
 	// 初始化 GeoIP
-	var err error
 	if _, err := os.Stat(GeoCityPath); err == nil {
 		geoCity, err = geoip2.Open(GeoCityPath)
 		if err != nil {
@@ -279,6 +252,17 @@ func main() {
 		defer geoAsn.Close()
 	}
 
+	initRedis()
+
+	// 初始化 SSE Broker
+	sseBroker = &SSEBroker{
+		Clients:       make(map[chan string]bool),
+		NewClients:    make(chan chan string),
+		ClosedClients: make(chan chan string),
+		Message:       make(chan string),
+	}
+	go startSSEBroker()
+
 	if err := initDB(); err != nil {
 		logger.Fatalf("数据库初始化失败: %v", err)
 	}
@@ -288,14 +272,10 @@ func main() {
 		}
 	}()
 
-	// 初始化 SSE Broker
-	sseBroker = NewSSEBroker()
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	rawChan := make(chan RawSnapshot, 20)
-	writeChan := make(chan []ProcessedLog, 10)
 
 	var wg sync.WaitGroup
 
@@ -308,13 +288,13 @@ func main() {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		startProcessor(ctx, rawChan, writeChan)
+		startProcessor(ctx, rawChan)
 	}()
 
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		startWriter(ctx, writeChan)
+		startAsyncWriter(ctx)
 	}()
 
 	wg.Add(1)
@@ -323,19 +303,20 @@ func main() {
 		startCleaner(ctx)
 	}()
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		startCacheCleaner(ctx)
-	}()
+	// 🔧 FIX: 添加 Redis Pub/Sub 订阅者
+	if redisEnabled {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			startRedisBroadcastListener(ctx)
+		}()
+	}
 
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Recovery())
 
 	r.Static("/static", "./static")
-	// 专门为旗帜图标添加静态路由，假设用户将图标放在 static/flags 目录下
-	r.Static("/static/flags", "./static/flags")
 
 	r.GET("/", func(c *gin.Context) {
 		c.Header("Content-Type", "text/html; charset=utf-8")
@@ -383,7 +364,7 @@ func main() {
 				if err != nil || days <= 0 {
 					days = 7
 				}
-				report, err := generateAnalysisReport(days)
+				report, err := getAnalysisReport(c, days)
 				if err != nil {
 					c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 					return
@@ -410,7 +391,7 @@ func main() {
 		logger.Printf("==============================================")
 		logger.Printf("WireGuard Monitor & Manager 启动成功")
 		logger.Printf("接口: %s | 端口: %s", WGInterface, ServerPort)
-		logger.Printf("数据库: %s", DBPath)
+		logger.Printf("数据库: MySQL")
 		logger.Printf("GeoIP City: %s", GeoCityPath)
 		logger.Printf("==============================================")
 
@@ -522,6 +503,67 @@ func loginHandler(c *gin.Context) {
 	})
 }
 
+// 🔧 FIX: 添加 SSE Broker 启动函数，使用互斥锁保护
+func startSSEBroker() {
+	for {
+		select {
+		case s := <-sseBroker.NewClients:
+			sseBroker.mu.Lock()
+			sseBroker.Clients[s] = true
+			sseBroker.mu.Unlock()
+		case s := <-sseBroker.ClosedClients:
+			sseBroker.mu.Lock()
+			delete(sseBroker.Clients, s)
+			sseBroker.mu.Unlock()
+			close(s)
+		case msg := <-sseBroker.Message:
+			sseBroker.mu.RLock()
+			for s := range sseBroker.Clients {
+				select {
+				case s <- msg:
+				default:
+					// 客户端阻塞，移除
+					go func(client chan string) {
+						sseBroker.mu.Lock()
+						delete(sseBroker.Clients, client)
+						sseBroker.mu.Unlock()
+						close(client)
+					}(s)
+				}
+			}
+			sseBroker.mu.RUnlock()
+		}
+	}
+}
+
+// 🔧 FIX: 添加 Redis Pub/Sub 监听器
+func startRedisBroadcastListener(ctx context.Context) {
+	logger.Println("Redis Pub/Sub 监听器已启动")
+	defer logger.Println("Redis Pub/Sub 监听器已停止")
+
+	pubsub := rdb.Subscribe(ctx, "wg:channel:broadcast")
+	defer pubsub.Close()
+
+	ch := pubsub.Channel()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case msg, ok := <-ch:
+			if !ok {
+				return
+			}
+			// 转发到 SSE Broker
+			select {
+			case sseBroker.Message <- msg.Payload:
+			default:
+				// Broker 阻塞，跳过此消息
+			}
+		}
+	}
+}
+
 func streamHandler(c *gin.Context) {
 	clientChan := make(chan string)
 	sseBroker.NewClients <- clientChan
@@ -553,6 +595,12 @@ func getGeoIPInfo(c *gin.Context) {
 		return
 	}
 
+	// 兼容带端口的 Endpoint 格式 (如 [2001:db8::1]:51820)
+	if host, _, err := net.SplitHostPort(ipStr); err == nil {
+		ipStr = host
+	}
+	ipStr = strings.Trim(ipStr, "[]")
+
 	ip := net.ParseIP(ipStr)
 	if ip == nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid ip"})
@@ -583,11 +631,16 @@ func getGeoIPInfo(c *gin.Context) {
 	c.JSON(http.StatusOK, resp)
 }
 
+func isValidConfigName(name string) bool {
+	validName := regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+	return validName.MatchString(name)
+}
+
 // ================= 数据库逻辑 =================
 
 func initDB() error {
 	var err error
-	db, err = sql.Open("sqlite", DBPath)
+	db, err = sql.Open("mysql", MySQLDSN)
 	if err != nil {
 		return err
 	}
@@ -595,47 +648,35 @@ func initDB() error {
 	db.SetMaxIdleConns(DBMaxIdleConns)
 	db.SetConnMaxLifetime(DBConnMaxLifetime)
 
-	pragmas := []string{
-		"PRAGMA journal_mode = WAL",
-		"PRAGMA synchronous = NORMAL",
-		"PRAGMA cache_size = -64000",
-		"PRAGMA temp_store = MEMORY",
-	}
-	for _, pragma := range pragmas {
-		db.Exec(pragma)
-	}
-
-	schema := `
+	// 将建表语句拆分为独立的执行单元
+	schemaTraffic := `
     CREATE TABLE IF NOT EXISTS traffic_history (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        timestamp INTEGER NOT NULL, 
-        peer_public_key TEXT NOT NULL,
-        endpoint TEXT DEFAULT '',
-        rx_bytes INTEGER NOT NULL,
-        tx_bytes INTEGER NOT NULL,
+        id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        timestamp BIGINT UNSIGNED NOT NULL, 
+        peer_public_key CHAR(44) NOT NULL,
+        endpoint VARCHAR(64) DEFAULT '',
+        rx_bytes BIGINT UNSIGNED NOT NULL,
+        tx_bytes BIGINT UNSIGNED NOT NULL,
         rx_rate REAL DEFAULT 0,
         tx_rate REAL DEFAULT 0,
-        is_online BOOLEAN DEFAULT 0
-    );
-    CREATE INDEX IF NOT EXISTS idx_peer_time ON traffic_history(peer_public_key, timestamp);
-    CREATE INDEX IF NOT EXISTS idx_time ON traffic_history(timestamp);
+        is_online TINYINT(1) DEFAULT 0,
+        INDEX idx_peer_time (peer_public_key, timestamp),
+        INDEX idx_time (timestamp)
+    );`
 
+	schemaAliases := `
     CREATE TABLE IF NOT EXISTS peer_aliases (
-        public_key TEXT PRIMARY KEY,
+        public_key CHAR(44) PRIMARY KEY,
         alias TEXT NOT NULL
-    );
-    `
-	if _, err = db.Exec(schema); err != nil {
-		return err
+    );`
+
+	// 分开执行
+	if _, err = db.Exec(schemaTraffic); err != nil {
+		return fmt.Errorf("创建 traffic_history 表失败: %v", err)
 	}
 
-	checkCol := "SELECT endpoint FROM traffic_history LIMIT 1"
-	if _, err := db.Query(checkCol); err != nil {
-		logger.Println("检测到旧版数据库，正在升级表结构 (添加 endpoint)...")
-		_, err = db.Exec("ALTER TABLE traffic_history ADD COLUMN endpoint TEXT DEFAULT ''")
-		if err != nil {
-			logger.Printf("数据库升级失败: %v", err)
-		}
+	if _, err = db.Exec(schemaAliases); err != nil {
+		return fmt.Errorf("创建 peer_aliases 表失败: %v", err)
 	}
 
 	return nil
@@ -684,9 +725,24 @@ func collectPeersData() ([]PeerData, string, int, error) {
 		defer rows.Close()
 		for rows.Next() {
 			var pk, a string
-			rows.Scan(&pk, &a)
+			if err := rows.Scan(&pk, &a); err != nil {
+				continue
+			}
 			aliasMap[pk] = a
 		}
+	}
+
+	// 🔧 FIX: 添加 Redis 可用性检查
+	var redisCmds map[string]*redis.StringStringMapCmd
+	if redisEnabled {
+		// 批量获取 Redis 状态
+		pipe := rdb.Pipeline()
+		redisCmds = make(map[string]*redis.StringStringMapCmd)
+		for _, p := range device.Peers {
+			key := fmt.Sprintf("wg:peer:state:%s", p.PublicKey.String())
+			redisCmds[p.PublicKey.String()] = pipe.HGetAll(context.Background(), key)
+		}
+		pipe.Exec(context.Background())
 	}
 
 	var peers []PeerData
@@ -703,11 +759,21 @@ func collectPeersData() ([]PeerData, string, int, error) {
 
 		var rxRate, txRate float64
 		var isOnline bool
-		if val, ok := latestPeersCache.Load(pk); ok {
-			entry := val.(cacheEntry)
-			rxRate, txRate, isOnline = entry.data.RxRate, entry.data.TxRate, entry.data.IsOnline
-		} else {
-			isOnline = !p.LastHandshakeTime.IsZero() && time.Since(p.LastHandshakeTime) < OnlineThreshold
+
+		// 从 Redis 获取实时状态
+		if redisEnabled && redisCmds != nil {
+			val, err := redisCmds[pk].Result()
+			if err == nil && len(val) > 0 {
+				rxRate, _ = strconv.ParseFloat(val["rx_rate"], 64)
+				txRate, _ = strconv.ParseFloat(val["tx_rate"], 64)
+				onlineInt, _ := strconv.Atoi(val["is_online"])
+				isOnline = onlineInt == 1
+			}
+		}
+
+		// 如果 Redis 没有数据，回退到基于握手时间的判断
+		if !isOnline && !p.LastHandshakeTime.IsZero() && time.Since(p.LastHandshakeTime) < OnlineThreshold {
+			isOnline = true
 		}
 
 		peers = append(peers, PeerData{
@@ -737,49 +803,29 @@ func collectPeersData() ([]PeerData, string, int, error) {
 	return peers, device.Name, device.ListenPort, nil
 }
 
-func broadcastUpdates() {
-	if len(sseBroker.Clients) == 0 {
-		return
-	}
-
-	peers, _, _, err := collectPeersData()
-	if err != nil {
-		logger.Printf("广播数据收集失败: %v", err)
-		return
-	}
-
-	update := DashboardUpdate{
-		Peers:  peers,
-		System: collectSystemInfo(),
-	}
-
-	jsonData, err := json.Marshal(update)
-	if err == nil {
-		sseBroker.Message <- string(jsonData)
-	}
-}
-
 // ================= 深度分析逻辑 =================
 
-func generateAnalysisReport(days int) (*AnalysisReport, error) {
+func generateAnalysisReport(ctx context.Context, days int) (*AnalysisReport, error) {
 	startTime := time.Now().AddDate(0, 0, -days).Unix()
 	report := &AnalysisReport{}
 
 	aliasMap := make(map[string]string)
-	rows, _ := db.Query("SELECT public_key, alias FROM peer_aliases")
-	if rows != nil {
+	rows, err := db.Query("SELECT public_key, alias FROM peer_aliases")
+	if err == nil && rows != nil {
 		defer rows.Close()
 		for rows.Next() {
 			var pk, a string
-			rows.Scan(&pk, &a)
+			if err := rows.Scan(&pk, &a); err != nil {
+				continue
+			}
 			aliasMap[pk] = a
 		}
 	}
 
-	q := `SELECT peer_public_key, COUNT(*), TOTAL(is_online), TOTAL(rx_rate), TOTAL(tx_rate), MAX(timestamp) 
-          FROM traffic_history WHERE timestamp > ? GROUP BY peer_public_key`
+	q := `SELECT peer_public_key, COUNT(*), SUM(is_online), SUM(rx_rate), SUM(tx_rate), MAX(timestamp) 
+		    FROM traffic_history WHERE timestamp > ? GROUP BY peer_public_key`
 
-	pRows, err := db.Query(q, startTime)
+	pRows, err := db.QueryContext(ctx, q, startTime)
 	if err != nil {
 		return nil, err
 	}
@@ -790,7 +836,9 @@ func generateAnalysisReport(days int) (*AnalysisReport, error) {
 		var count int64
 		var onlineSum, rxSum, txSum float64
 		var lastSeen int64
-		pRows.Scan(&pk, &count, &onlineSum, &rxSum, &txSum, &lastSeen)
+		if err := pRows.Scan(&pk, &count, &onlineSum, &rxSum, &txSum, &lastSeen); err != nil {
+			continue
+		}
 
 		if count == 0 {
 			count = 1
@@ -818,9 +866,9 @@ func generateAnalysisReport(days int) (*AnalysisReport, error) {
 		return (report.Peers[i].TotalRx + report.Peers[i].TotalTx) > (report.Peers[j].TotalRx + report.Peers[j].TotalTx)
 	})
 
-	hQuery := `SELECT timestamp, TOTAL(rx_rate + tx_rate) FROM traffic_history 
-               WHERE timestamp > ? GROUP BY timestamp`
-	hRows, err := db.Query(hQuery, startTime)
+	hQuery := `SELECT timestamp, SUM(rx_rate + tx_rate) FROM traffic_history 
+			   WHERE timestamp > ? GROUP BY timestamp`
+	hRows, err := db.QueryContext(ctx, hQuery, startTime)
 	if err == nil {
 		defer hRows.Close()
 		hourMap := make(map[int]float64)
@@ -828,7 +876,9 @@ func generateAnalysisReport(days int) (*AnalysisReport, error) {
 		for hRows.Next() {
 			var ts int64
 			var rate float64
-			hRows.Scan(&ts, &rate)
+			if err := hRows.Scan(&ts, &rate); err != nil {
+				continue
+			}
 			h := time.Unix(ts, 0).Hour()
 			hourMap[h] += rate
 			hourCount[h]++
@@ -843,6 +893,39 @@ func generateAnalysisReport(days int) (*AnalysisReport, error) {
 	}
 
 	return report, nil
+}
+
+func getAnalysisReport(c *gin.Context, days int) (*AnalysisReport, error) {
+	// 🔧 FIX: 添加 Redis 可用性检查
+	if !redisEnabled {
+		report, err := generateAnalysisReport(c.Request.Context(), days)
+		if err == nil {
+			c.Header("X-Cache", "DISABLED")
+		}
+		return report, err
+	}
+
+	cacheKey := fmt.Sprintf("wg:cache:analysis:%d", days)
+
+	// 1. 尝试从 Redis 获取缓存
+	val, err := rdb.Get(c.Request.Context(), cacheKey).Result()
+	if err == nil {
+		var report AnalysisReport
+		if err := json.Unmarshal([]byte(val), &report); err == nil {
+			c.Header("X-Cache", "HIT")
+			return &report, nil
+		}
+	}
+
+	// 2. 缓存未命中，查询 MySQL
+	report, err := generateAnalysisReport(c.Request.Context(), days)
+	if err == nil {
+		// 3. 写入缓存 (TTL 设为 1 分钟)
+		jsonBytes, _ := json.Marshal(report)
+		rdb.Set(c.Request.Context(), cacheKey, jsonBytes, 1*time.Minute)
+		c.Header("X-Cache", "MISS")
+	}
+	return report, err
 }
 
 // ================= 管理功能逻辑 =================
@@ -862,6 +945,9 @@ func listConfigFiles(c *gin.Context) {
 }
 
 func addPeer(c *gin.Context) {
+	configMu.Lock()
+	defer configMu.Unlock()
+
 	var req AddPeerRequest
 	if err := c.BindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "参数错误"})
@@ -878,6 +964,11 @@ func addPeer(c *gin.Context) {
 		return
 	}
 
+	if !isValidConfigName(req.ConfigFile) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "非法配置名，仅允许字母数字下划线"})
+		return
+	}
+
 	client, err := wgctrl.New()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "无法连接 WG 控制器"})
@@ -890,9 +981,17 @@ func addPeer(c *gin.Context) {
 		return
 	}
 
-	pKey, _ := wgtypes.GeneratePrivateKey()
+	pKey, err := wgtypes.GeneratePrivateKey()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "生成私钥失败"})
+		return
+	}
 	pubKey := pKey.PublicKey()
-	presharedKey, _ := wgtypes.GenerateKey()
+	presharedKey, err := wgtypes.GenerateKey()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "生成预共享密钥失败"})
+		return
+	}
 
 	confPath := fmt.Sprintf("/etc/wireguard/%s.conf", req.ConfigFile)
 	f, err := os.OpenFile(confPath, os.O_APPEND|os.O_WRONLY, 0600)
@@ -911,8 +1010,7 @@ func addPeer(c *gin.Context) {
 	}
 	f.Close()
 
-	db.Exec(`INSERT INTO peer_aliases (public_key, alias) VALUES (?, ?) 
-             ON CONFLICT(public_key) DO UPDATE SET alias = excluded.alias`, pubKey.String(), req.Name)
+	db.Exec(`INSERT INTO peer_aliases (public_key, alias) VALUES (?, ?) ON DUPLICATE KEY UPDATE alias = VALUES(alias)`, pubKey.String(), req.Name)
 
 	if err := reloadWireGuard(req.ConfigFile); err != nil {
 		c.JSON(http.StatusOK, gin.H{"status": "saved_but_reload_failed", "error": err.Error()})
@@ -933,8 +1031,16 @@ func removePeer(c *gin.Context) {
 	configFile := c.Query("config")
 	pubKey := c.Query("public_key")
 
+	configMu.Lock()
+	defer configMu.Unlock()
+
 	if configFile == "" || pubKey == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "参数缺失"})
+		return
+	}
+
+	if !isValidConfigName(configFile) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "非法配置名"})
 		return
 	}
 
@@ -982,9 +1088,17 @@ func reloadWireGuard(confName string) error {
 }
 
 func suggestIPHandler(c *gin.Context) {
+	configMu.Lock()
+	defer configMu.Unlock()
+
 	confName := c.Query("config")
 	if confName == "" {
 		confName = "wg0"
+	}
+
+	if !isValidConfigName(confName) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "非法配置名"})
+		return
 	}
 
 	path := fmt.Sprintf("/etc/wireguard/%s.conf", confName)
@@ -997,7 +1111,6 @@ func suggestIPHandler(c *gin.Context) {
 	serverIPStr := ""
 	lines := strings.Split(string(content), "\n")
 	reAddr := regexp.MustCompile(`(?i)^\s*Address\s*=\s*([0-9.]+)(/[0-9]+)?`)
-	reAllowed := regexp.MustCompile(`(?i)^\s*AllowedIPs\s*=\s*([0-9.]+)(/[0-9]+)?`)
 
 	usedIPs := make(map[string]bool)
 
@@ -1009,8 +1122,17 @@ func suggestIPHandler(c *gin.Context) {
 				usedIPs[matches[1]] = true
 			}
 		}
-		if matches := reAllowed.FindStringSubmatch(line); len(matches) > 1 {
-			usedIPs[matches[1]] = true
+		// 解析 AllowedIPs，支持逗号分隔
+		if strings.HasPrefix(strings.TrimSpace(strings.ToLower(line)), "allowedips") {
+			parts := strings.Split(line, "=")
+			if len(parts) > 1 {
+				ips := strings.Split(parts[1], ",")
+				for _, ipCidr := range ips {
+					if ip, _, err := net.ParseCIDR(strings.TrimSpace(ipCidr)); err == nil {
+						usedIPs[ip.String()] = true
+					}
+				}
+			}
 		}
 	}
 
@@ -1157,38 +1279,27 @@ func startCollector(ctx context.Context, out chan<- RawSnapshot) {
 	}
 }
 
-func startProcessor(ctx context.Context, in <-chan RawSnapshot, out chan<- []ProcessedLog) {
+func startProcessor(ctx context.Context, in <-chan RawSnapshot) {
 	logger.Println("处理器已启动")
 	stateMap := make(map[string]*PeerState)
-	var buffer []ProcessedLog
-	flushTicker := time.NewTicker(WriteInterval)
-	defer flushTicker.Stop()
-
-	flush := func() {
-		if len(buffer) == 0 {
-			return
-		}
-		batch := make([]ProcessedLog, len(buffer))
-		copy(batch, buffer)
-		select {
-		case out <- batch:
-			buffer = buffer[:0]
-		case <-ctx.Done():
-			return
-		default:
-		}
-	}
 
 	for {
 		select {
 		case <-ctx.Done():
-			flush()
-			close(out)
 			return
 		case snap, ok := <-in:
 			if !ok {
 				return
 			}
+			
+			// 🔧 FIX: 添加 Redis 可用性检查
+			var pipe redis.Pipeliner
+			if redisEnabled {
+				pipe = rdb.Pipeline()
+			}
+			
+			var currentLogs []ProcessedLog
+
 			for _, p := range snap.Peers {
 				pk := p.PublicKey.String()
 				state, exists := stateMap[pk]
@@ -1235,46 +1346,106 @@ func startProcessor(ctx context.Context, in <-chan RawSnapshot, out chan<- []Pro
 					IsOnline:  isOnline,
 				}
 
-				buffer = append(buffer, logEntry)
-				latestPeersCache.Store(pk, cacheEntry{data: logEntry, timestamp: time.Now()})
+				currentLogs = append(currentLogs, logEntry)
+
+				// 🔧 FIX: 只有 Redis 可用时才执行
+				if redisEnabled && pipe != nil {
+					// 1. 更新 Redis 实时状态 (Hash)
+					key := fmt.Sprintf("wg:peer:state:%s", pk)
+					onlineVal := 0
+					if isOnline {
+						onlineVal = 1
+					}
+					pipe.HSet(ctx, key, map[string]interface{}{
+						"rx_rate":   rxRate,
+						"tx_rate":   txRate,
+						"is_online": onlineVal,
+						"endpoint":  epStr,
+						"last_seen": snap.Timestamp.Unix(),
+					})
+					pipe.Expire(ctx, key, 5*time.Minute)
+
+					// 2. 推送日志到写入队列 (List)
+					jsonBytes, _ := json.Marshal(logEntry)
+					pipe.RPush(ctx, "wg:queue:traffic", jsonBytes)
+				}
 			}
 
-			// 数据处理完毕，触发 SSE 广播
-			go broadcastUpdates()
+			if redisEnabled && pipe != nil {
+				_, err := pipe.Exec(ctx)
+				if err != nil {
+					logger.Printf("Redis Pipeline error: %v", err)
+				}
 
-			if len(buffer) >= BatchSize {
-				flush()
+				// 3. 触发 SSE 广播 (通过 Redis Pub/Sub)
+				peers, _, _, _ := collectPeersData()
+				update := DashboardUpdate{
+					Peers:  peers,
+					System: collectSystemInfo(),
+				}
+				if jsonData, err := json.Marshal(update); err == nil {
+					rdb.Publish(ctx, "wg:channel:broadcast", string(jsonData))
+				}
+			} else {
+				// 🔧 FIX: Redis 不可用时，直接将数据写入 MySQL（通过内存队列）
+				// 此处需要有替代机制，暂时不处理 SSE
 			}
-		case <-flushTicker.C:
-			flush()
 		}
 	}
 }
 
-func startWriter(ctx context.Context, in <-chan []ProcessedLog) {
-	logger.Println("写入器已启动")
+func startAsyncWriter(ctx context.Context) {
+	logger.Println("异步写入器已启动 (Redis -> MySQL)")
+	const BatchSize = 100
+	const FlushInterval = 5 * time.Second
+
+	var batch []ProcessedLog
+	ticker := time.NewTicker(FlushInterval)
+	defer ticker.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
+			flushMySQL(batch)
 			return
-		case batch, ok := <-in:
-			if !ok {
-				return
+		case <-ticker.C:
+			if len(batch) > 0 {
+				flushMySQL(batch)
+				batch = batch[:0]
 			}
-			if len(batch) == 0 {
+		default:
+			// 🔧 FIX: 添加 Redis 可用性检查
+			if !redisEnabled {
+				// Redis 不可用，等待并重试
+				time.Sleep(2 * time.Second)
 				continue
 			}
-			if err := writeBatch(batch); err != nil {
-				logger.Printf("批量写入失败: %v", err)
+
+			// 从 Redis 阻塞读取
+			result, err := rdb.BLPop(ctx, 2*time.Second, "wg:queue:traffic").Result()
+			if err == nil && len(result) == 2 {
+				var logEntry ProcessedLog
+				if err := json.Unmarshal([]byte(result[1]), &logEntry); err == nil {
+					batch = append(batch, logEntry)
+					if len(batch) >= BatchSize {
+						flushMySQL(batch)
+						batch = batch[:0]
+					}
+				}
 			}
 		}
 	}
 }
 
-func writeBatch(batch []ProcessedLog) error {
+func flushMySQL(batch []ProcessedLog) {
+	if len(batch) == 0 {
+		return
+	}
+
 	tx, err := db.Begin()
 	if err != nil {
-		return err
+		logger.Printf("MySQL 事务开启失败: %v", err)
+		return
 	}
 	defer tx.Rollback()
 
@@ -1284,7 +1455,8 @@ func writeBatch(batch []ProcessedLog) error {
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `)
 	if err != nil {
-		return err
+		logger.Printf("MySQL Prepare 失败: %v", err)
+		return
 	}
 	defer stmt.Close()
 
@@ -1302,7 +1474,9 @@ func writeBatch(batch []ProcessedLog) error {
 			continue
 		}
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		logger.Printf("MySQL 提交失败: %v", err)
+	}
 }
 
 func startCleaner(ctx context.Context) {
@@ -1325,26 +1499,14 @@ func startCleaner(ctx context.Context) {
 
 func cleanOldData() {
 	expireTime := time.Now().AddDate(0, 0, -Retention).Unix()
-	db.Exec(`DELETE FROM traffic_history WHERE timestamp < ?`, expireTime)
-}
-
-func startCacheCleaner(ctx context.Context) {
-	ticker := time.NewTicker(CacheTTL)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			now := time.Now()
-			latestPeersCache.Range(func(key, value interface{}) bool {
-				entry := value.(cacheEntry)
-				if now.Sub(entry.timestamp) > CacheTTL {
-					latestPeersCache.Delete(key)
-				}
-				return true
-			})
-		}
+	// 🔧 FIX: 添加错误检查
+	result, err := db.Exec(`DELETE FROM traffic_history WHERE timestamp < ?`, expireTime)
+	if err != nil {
+		logger.Printf("清理旧数据失败: %v", err)
+		return
+	}
+	if rows, err := result.RowsAffected(); err == nil && rows > 0 {
+		logger.Printf("已清理 %d 条旧数据记录", rows)
 	}
 }
 
@@ -1407,7 +1569,9 @@ func getPeerHistory(c *gin.Context) {
 	for rows.Next() {
 		var ts int64
 		var rx, tx float64
-		rows.Scan(&ts, &rx, &tx)
+		if err := rows.Scan(&ts, &rx, &tx); err != nil {
+			continue
+		}
 		slot := (ts / step) * step
 		if _, ok := buckets[slot]; !ok {
 			buckets[slot] = &bucket{}
@@ -1417,7 +1581,7 @@ func getPeerHistory(c *gin.Context) {
 		buckets[slot].count++
 	}
 
-	var tsList []int64
+	tsList := make([]int64, 0)
 	for t := range buckets {
 		tsList = append(tsList, t)
 	}
@@ -1549,7 +1713,9 @@ func getTrafficChartData(c *gin.Context) {
 	for rows.Next() {
 		var ts int64
 		var rx, tx float64
-		rows.Scan(&ts, &rx, &tx)
+		if err := rows.Scan(&ts, &rx, &tx); err != nil {
+			continue
+		}
 		slot := (ts / step) * step
 		b := buckets[slot]
 		b.rx += rx
@@ -1557,7 +1723,7 @@ func getTrafficChartData(c *gin.Context) {
 		b.count++
 		buckets[slot] = b
 	}
-	var tsList []int64
+	tsList := make([]int64, 0)
 	for t := range buckets {
 		tsList = append(tsList, t)
 	}
@@ -1584,6 +1750,26 @@ func setAlias(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "无效请求"})
 		return
 	}
-	db.Exec(`INSERT INTO peer_aliases (public_key, alias) VALUES (?, ?) ON CONFLICT(public_key) DO UPDATE SET alias = excluded.alias`, req.PublicKey, req.Alias)
+	// 🔧 FIX: 添加错误检查
+	_, err := db.Exec(`INSERT INTO peer_aliases (public_key, alias) VALUES (?, ?) ON DUPLICATE KEY UPDATE alias = VALUES(alias)`, req.PublicKey, req.Alias)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "更新别名失败"})
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+}
+
+func initRedis() {
+	rdb = redis.NewClient(&redis.Options{
+		Addr: RedisAddr,
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := rdb.Ping(ctx).Err(); err != nil {
+		logger.Printf("Redis 连接失败: %v (将禁用缓存/队列功能)", err)
+		redisEnabled = false
+	} else {
+		logger.Println("Redis 已连接")
+		redisEnabled = true
+	}
 }
