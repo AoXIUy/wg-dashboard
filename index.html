@@ -12,7 +12,11 @@
     <script src="/static/js/chartjs-adapter-date-fns.bundle.min.js"></script>
     <script src="/static/js/tailwindcss.js"></script>
     <script src="/static/js/lucide.min.js"></script>
+    <link rel="stylesheet" href="/static/css/leaflet.css">
     <script src="/static/js/qrcode.min.js"></script>
+    <script src="/static/js/leaflet.js"></script>
+    <script src="/static/js/vis-network.min.js"></script>
+    <script src="/static/js/advanced_analysis.js"></script>
 
     <script>
         tailwind.config = {
@@ -679,100 +683,159 @@
                 class="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-50 flex items-center justify-center p-4"
                 @click.self="showAnalysis=false">
                 <div
-                    class="glass-card bg-white dark:bg-[#0f172a] rounded-3xl w-full max-w-5xl flex flex-col max-h-[85vh] shadow-2xl overflow-hidden">
+                    class="glass-card bg-white dark:bg-[#0f172a] rounded-3xl w-full max-w-6xl flex flex-col max-h-[90vh] shadow-2xl overflow-hidden">
                     <div
-                        class="flex justify-between items-center p-5 border-b border-slate-100 dark:border-white/5 bg-slate-50/50 dark:bg-slate-900/50">
-                        <h2 class="text-lg font-bold text-slate-800 dark:text-white flex items-center gap-2">
-                            <i data-lucide="pie-chart" class="w-5 h-5 text-blue-500"></i> 网络分析
-                        </h2>
-                        <button @click="showAnalysis=false"
-                            class="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full text-slate-500"><i
-                                data-lucide="x" class="w-5 h-5"></i></button>
-                    </div>
-                    <div class="p-6 overflow-y-auto custom-scrollbar flex-1">
-                        <div v-if="analysisLoading" class="flex flex-col items-center justify-center h-[400px] gap-3">
-                            <div
-                                class="animate-spin w-8 h-8 border-2 border-blue-500 border-t-transparent rounded-full">
-                            </div>
-                            <span class="text-slate-400 text-sm">正在分析网络数据...</span>
+                        class="flex flex-col border-b border-slate-100 dark:border-white/5 bg-slate-50/50 dark:bg-slate-900/50">
+                        <div class="flex justify-between items-center p-5">
+                            <h2 class="text-lg font-bold text-slate-800 dark:text-white flex items-center gap-2">
+                                <i data-lucide="pie-chart" class="w-5 h-5 text-blue-500"></i> 网络深度分析
+                            </h2>
+                            <button @click="showAnalysis=false"
+                                class="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full text-slate-500"><i
+                                    data-lucide="x" class="w-5 h-5"></i></button>
                         </div>
-                        <div v-else class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div class="flex px-5 gap-1 overflow-x-auto">
+                            <button @click="changeAnalysisTab('overview')"
+                                :class="['px-4 py-2 text-sm font-medium border-b-2 transition-colors whitespace-nowrap', analysisTab==='overview' ? 'border-blue-500 text-blue-600 dark:text-blue-400' : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300']">概览</button>
+                            <button @click="changeAnalysisTab('map')"
+                                :class="['px-4 py-2 text-sm font-medium border-b-2 transition-colors whitespace-nowrap', analysisTab==='map' ? 'border-blue-500 text-blue-600 dark:text-blue-400' : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300']">全球分布</button>
+                            <button @click="changeAnalysisTab('topology')"
+                                :class="['px-4 py-2 text-sm font-medium border-b-2 transition-colors whitespace-nowrap', analysisTab==='topology' ? 'border-blue-500 text-blue-600 dark:text-blue-400' : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300']">拓扑结构</button>
+                            <button @click="changeAnalysisTab('heatmap')"
+                                :class="['px-4 py-2 text-sm font-medium border-b-2 transition-colors whitespace-nowrap', analysisTab==='heatmap' ? 'border-blue-500 text-blue-600 dark:text-blue-400' : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300']">流量热力</button>
+                        </div>
+                    </div>
+
+                    <div
+                        class="p-0 overflow-y-auto custom-scrollbar flex-1 bg-slate-50/30 dark:bg-slate-900/20 relative">
+                        <div v-if="analysisLoading"
+                            class="absolute inset-0 flex flex-col items-center justify-center z-10 bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm">
                             <div
-                                class="bg-slate-50 dark:bg-slate-800/30 p-5 rounded-2xl border border-slate-100 dark:border-white/5 flex flex-col">
-                                <h3
-                                    class="text-sm font-bold text-slate-600 dark:text-slate-300 mb-4 flex items-center gap-2">
-                                    <i data-lucide="disc" class="w-4 h-4"></i> 流量占比 (Top 5)
-                                </h3>
-                                <div class="h-[250px] w-full relative">
-                                    <canvas id="trafficPieChart"></canvas>
-                                </div>
+                                class="animate-spin w-8 h-8 border-2 border-blue-500 border-t-transparent rounded-full mb-3">
                             </div>
-                            <div
-                                class="bg-slate-50 dark:bg-slate-800/30 p-5 rounded-2xl border border-slate-100 dark:border-white/5 flex flex-col">
-                                <h3
-                                    class="text-sm font-bold text-slate-600 dark:text-slate-300 mb-4 flex items-center gap-2">
-                                    <i data-lucide="bar-chart" class="w-4 h-4"></i> 24小时活跃度
-                                </h3>
-                                <div class="h-[250px] w-full relative">
-                                    <canvas id="activityBarChart"></canvas>
-                                </div>
-                            </div>
-                            <div
-                                class="md:col-span-2 bg-slate-50 dark:bg-slate-800/30 rounded-2xl border border-slate-100 dark:border-white/5 overflow-hidden">
+                            <span class="text-slate-500 text-sm">正在分析网络数据...</span>
+                        </div>
+
+                        <div v-show="analysisTab==='overview'" class="p-6">
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
                                 <div
-                                    class="p-4 border-b border-slate-200 dark:border-white/5 bg-slate-100/50 dark:bg-slate-900/30">
+                                    class="bg-slate-50 dark:bg-slate-800/30 p-5 rounded-2xl border border-slate-100 dark:border-white/5 flex flex-col">
                                     <h3
-                                        class="font-bold text-slate-800 dark:text-white text-sm flex items-center gap-2">
-                                        <i data-lucide="activity" class="w-4 h-4 text-blue-500"></i> 客户端健康评分
+                                        class="text-sm font-bold text-slate-600 dark:text-slate-300 mb-4 flex items-center gap-2">
+                                        <i data-lucide="disc" class="w-4 h-4"></i> 流量占比 (Top 5)
                                     </h3>
+                                    <div class="h-[250px] w-full relative">
+                                        <canvas id="trafficPieChart"></canvas>
+                                    </div>
                                 </div>
-                                <div class="overflow-x-auto">
-                                    <table class="w-full text-left text-sm">
-                                        <thead
-                                            class="bg-slate-100 dark:bg-slate-900/50 text-xs text-slate-500 dark:text-slate-400">
-                                            <tr>
-                                                <th class="p-4">用户</th>
-                                                <th class="p-4">总流量</th>
-                                                <th class="p-4">在线率 (7d)</th>
-                                                <th class="p-4">健康分</th>
-                                                <th class="p-4 text-right">最后活跃</th>
-                                            </tr>
-                                        </thead>
-                                        <tbody
-                                            class="divide-y divide-slate-200 dark:divide-white/5 text-slate-700 dark:text-slate-300">
-                                            <tr v-for="p in analysisData.peers" :key="p.public_key"
-                                                class="hover:bg-slate-100/80 dark:hover:bg-white/5 transition-colors">
-                                                <td class="p-4 font-medium">
-                                                    <div class="flex items-center gap-2">
-                                                        <div class="w-2 h-2 rounded-full"
-                                                            :class="p.health_score > 80 ? 'bg-emerald-500' : (p.health_score > 50 ? 'bg-yellow-500' : 'bg-red-500')">
+                                <div
+                                    class="bg-slate-50 dark:bg-slate-800/30 p-5 rounded-2xl border border-slate-100 dark:border-white/5 flex flex-col">
+                                    <h3
+                                        class="text-sm font-bold text-slate-600 dark:text-slate-300 mb-4 flex items-center gap-2">
+                                        <i data-lucide="bar-chart" class="w-4 h-4"></i> 24小时活跃度
+                                    </h3>
+                                    <div class="h-[250px] w-full relative">
+                                        <canvas id="activityBarChart"></canvas>
+                                    </div>
+                                </div>
+                                <div
+                                    class="md:col-span-2 bg-slate-50 dark:bg-slate-800/30 rounded-2xl border border-slate-100 dark:border-white/5 overflow-hidden">
+                                    <div
+                                        class="p-4 border-b border-slate-200 dark:border-white/5 bg-slate-100/50 dark:bg-slate-900/30">
+                                        <h3
+                                            class="font-bold text-slate-800 dark:text-white text-sm flex items-center gap-2">
+                                            <i data-lucide="activity" class="w-4 h-4 text-blue-500"></i>
+                                            客户端健康评分
+                                        </h3>
+                                    </div>
+                                    <div class="overflow-x-auto">
+                                        <table class="w-full text-left text-sm">
+                                            <thead
+                                                class="bg-slate-100 dark:bg-slate-900/50 text-xs text-slate-500 dark:text-slate-400">
+                                                <tr>
+                                                    <th class="p-4">用户</th>
+                                                    <th class="p-4">总流量</th>
+                                                    <th class="p-4">在线率 (7d)</th>
+                                                    <th class="p-4">健康分</th>
+                                                    <th class="p-4 text-right">最后活跃</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody
+                                                class="divide-y divide-slate-200 dark:divide-white/5 text-slate-700 dark:text-slate-300">
+                                                <tr v-for="p in analysisData.peers" :key="p.public_key"
+                                                    class="hover:bg-slate-100/80 dark:hover:bg-white/5 transition-colors">
+                                                    <td class="p-4 font-medium">
+                                                        <div class="flex items-center gap-2">
+                                                            <div class="w-2 h-2 rounded-full"
+                                                                :class="p.health_score > 80 ? 'bg-emerald-500' : (p.health_score > 50 ? 'bg-yellow-500' : 'bg-red-500')">
+                                                            </div>
+                                                            {{ p.alias || p.public_key.substring(0,8) }}
                                                         </div>
-                                                        {{ p.alias || p.public_key.substring(0,8) }}
-                                                    </div>
-                                                </td>
-                                                <td class="p-4 font-mono text-xs">{{ fmtBytes(p.total_rx+p.total_tx) }}
-                                                </td>
-                                                <td class="p-4">
-                                                    <div class="flex items-center gap-2">
-                                                        <div
-                                                            class="w-24 h-1.5 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
-                                                            <div class="h-full bg-blue-500"
-                                                                :style="{width: p.uptime_percent+'%'}"></div>
+                                                    </td>
+                                                    <td class="p-4 font-mono text-xs">{{
+                                                        fmtBytes(p.total_rx+p.total_tx) }}
+                                                    </td>
+                                                    <td class="p-4">
+                                                        <div class="flex items-center gap-2">
+                                                            <div
+                                                                class="w-24 h-1.5 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
+                                                                <div class="h-full bg-blue-500"
+                                                                    :style="{width: p.uptime_percent+'%'}"></div>
+                                                            </div>
+                                                            <span class="text-xs text-slate-500">{{
+                                                                p.uptime_percent.toFixed(0) }}%</span>
                                                         </div>
-                                                        <span class="text-xs text-slate-500">{{
-                                                            p.uptime_percent.toFixed(0) }}%</span>
-                                                    </div>
-                                                </td>
-                                                <td class="p-4">
-                                                    <span class="px-2 py-0.5 rounded text-xs font-bold border"
-                                                        :class="getHealthClass(p.health_score)">{{ p.health_score
-                                                        }}</span>
-                                                </td>
-                                                <td class="p-4 text-right text-xs text-slate-500 font-mono">{{
-                                                    formatLastSeen(p.last_seen_time) }}</td>
-                                            </tr>
-                                        </tbody>
-                                    </table>
+                                                    </td>
+                                                    <td class="p-4">
+                                                        <span class="px-2 py-0.5 rounded text-xs font-bold border"
+                                                            :class="getHealthClass(p.health_score)">{{
+                                                            p.health_score
+                                                            }}</span>
+                                                    </td>
+                                                    <td class="p-4 text-right text-xs text-slate-500 font-mono">{{
+                                                        formatLastSeen(p.last_seen_time) }}</td>
+                                                </tr>
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div v-show="analysisTab==='map'" class="relative w-full h-full min-h-[500px]">
+                            <div id="worldMap" class="absolute inset-0 z-0"></div>
+                        </div>
+
+                        <div v-show="analysisTab==='topology'"
+                            class="relative w-full h-full min-h-[500px] bg-slate-100 dark:bg-[#0b1121]">
+                            <div id="networkTopology" class="absolute inset-0 z-0"></div>
+                        </div>
+
+                        <div v-show="analysisTab==='heatmap'" class="p-6">
+                            <div
+                                class="bg-white dark:bg-slate-800 rounded-2xl p-6 shadow-sm border border-slate-100 dark:border-white/5">
+                                <h3 class="text-sm font-bold text-slate-700 dark:text-slate-200 mb-4">7x24小时
+                                    全网流量热力图</h3>
+                                <canvas id="trafficHeatmap" class="w-full"></canvas>
+                                <div class="flex justify-between text-xs text-slate-400 mt-2">
+                                    <span>低负载 (蓝色)</span>
+                                    <span>高负载 (高亮)</span>
+                                </div>
+                            </div>
+                            <div v-if="analysisData && analysisData.optimal_time"
+                                class="mt-6 p-4 bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-100 dark:border-emerald-500/20 rounded-xl flex items-center gap-4">
+                                <div
+                                    class="p-3 bg-emerald-100 dark:bg-emerald-500/20 rounded-full text-emerald-600 dark:text-emerald-400">
+                                    <i data-lucide="clock" class="w-6 h-6"></i>
+                                </div>
+                                <div>
+                                    <h4 class="font-bold text-emerald-800 dark:text-emerald-300">最佳维护时段推荐</h4>
+                                    <p class="text-sm text-emerald-700 dark:text-emerald-400 mt-1">
+                                        建议在 <b>{{analysisData.optimal_time.start_hour}}:00 -
+                                            {{analysisData.optimal_time.end_hour}}:00</b> 进行维护，
+                                        此时段平均负载仅为
+                                        {{fmtRate(analysisData.optimal_time.avg_load_mbps)}}。
+                                    </p>
                                 </div>
                             </div>
                         </div>
@@ -1545,6 +1608,48 @@
                         await nextTick();
                         renderAnalysisCharts();
                         lucide.createIcons();
+                        if (analysisTab.value === 'map') initMap();
+                        if (analysisTab.value === 'topology') initTopology();
+                    }
+                };
+
+                const analysisTab = ref('overview');
+                const changeAnalysisTab = async (tab) => {
+                    analysisTab.value = tab;
+                    await nextTick();
+                    if (tab === 'map') initMap();
+                    if (tab === 'topology') initTopology();
+                    if (tab === 'heatmap') initHeatmap();
+                };
+
+                const initMap = async () => {
+                    try {
+                        const res = await axios.get('/api/map/data', { headers: { Authorization: `Bearer ${token.value}` } });
+                        window.AdvancedApp.initMap('worldMap', res.data);
+                    } catch (e) { console.error(e); }
+                };
+
+                const initTopology = async () => {
+                    try {
+                        const res = await axios.get('/api/map/data', { headers: { Authorization: `Bearer ${token.value}` } });
+                        window.AdvancedApp.initTopology('networkTopology', res.data);
+                    } catch (e) { console.error(e); }
+                };
+
+                const initHeatmap = async () => {
+                    // Heatmap data is part of the Advanced Analysis report
+                    if (!analysisData.value || !analysisData.value.global_heatmap) {
+                        try {
+                            const res = await axios.get('/api/analysis/advanced', { headers: { Authorization: `Bearer ${token.value}` } });
+                            if (analysisData.value) {
+                                analysisData.value.global_heatmap = res.data.global_heatmap;
+                            } else {
+                                analysisData.value = res.data;
+                            }
+                        } catch (e) { console.error(e); }
+                    }
+                    if (analysisData.value && analysisData.value.global_heatmap) {
+                        window.AdvancedApp.initHeatmap('trafficHeatmap', analysisData.value.global_heatmap);
                     }
                 };
 
@@ -1824,7 +1929,8 @@ PersistentKeepalive = 25
                     openAddModal, createPeer, deletePeer, downloadConfig, suggestIP,
                     showDeleteModal, peerToDelete, deleteLoading, confirmDelete,
                     accessLogs, logsLoading, fetchAccessLogs, getCountryCode, getGeoTitle,
-                    showIpDetailModal, selectedIpInfo, openIpInfo
+                    showIpDetailModal, selectedIpInfo, openIpInfo,
+                    analysisTab, changeAnalysisTab
                 };
             }
         }).mount('#app');

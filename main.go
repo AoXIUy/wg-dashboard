@@ -193,6 +193,7 @@ var (
 	geoAsn           *geoip2.Reader
 	sseBroker        *SSEBroker
 	redisEnabled     bool // 🔧 FIX: 添加 Redis 可用性标志
+	analysisEngine   *AnalysisEngine
 )
 
 // ================= 主程序 =================
@@ -266,6 +267,10 @@ func main() {
 	if err := initDB(); err != nil {
 		logger.Fatalf("数据库初始化失败: %v", err)
 	}
+	
+	// 初始化分析引擎
+	analysisEngine = NewAnalysisEngine(db)
+
 	defer func() {
 		if err := db.Close(); err != nil {
 			logger.Printf("数据库关闭失败: %v", err)
@@ -357,6 +362,8 @@ func main() {
 			
 			// 新增 GeoIP 接口
 			authorized.GET("/geoip", getGeoIPInfo)
+			authorized.GET("/map/data", getMapData) // 新增地图数据接口
+			authorized.GET("/analysis/advanced", getAdvancedAnalysis) // 新增高级分析接口
 
 			authorized.GET("/analysis", func(c *gin.Context) {
 				daysStr := c.DefaultQuery("days", "7")
@@ -618,6 +625,8 @@ func getGeoIPInfo(c *gin.Context) {
 			} else {
 				resp["city"] = record.City.Names["en"]
 			}
+			resp["latitude"] = record.Location.Latitude
+			resp["longitude"] = record.Location.Longitude
 		}
 	}
 
@@ -1772,4 +1781,85 @@ func initRedis() {
 		logger.Println("Redis 已连接")
 		redisEnabled = true
 	}
+}
+// ================= 地图与高级分析接�?=================
+
+func getMapData(c *gin.Context) {
+	peers, _, _, err := collectPeersData()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	type PeerGeo struct {
+		PublicKey string  `json:"public_key"`
+		Alias     string  `json:"alias"`
+		Endpoint  string  `json:"endpoint"`
+		IsOnline  bool    `json:"is_online"`
+		Lat       float64 `json:"lat"`
+		Lon       float64 `json:"lon"`
+		City      string  `json:"city"`
+		Country   string  `json:"country_code"`
+	}
+
+	var data []PeerGeo
+
+	for _, p := range peers {
+		if p.Endpoint == "" || p.Endpoint == "未连�? {
+			continue
+		}
+
+		host, _, err := net.SplitHostPort(p.Endpoint)
+		if err != nil {
+			host = p.Endpoint // fallback
+		}
+		
+		// Remove brackets if IPv6
+		host = strings.Trim(host, "[]")
+
+		ip := net.ParseIP(host)
+		if ip == nil {
+			continue
+		}
+
+		var lat, lon float64
+		var city, country string
+
+		if geoCity != nil {
+			if record, err := geoCity.City(ip); err == nil {
+				lat = record.Location.Latitude
+				lon = record.Location.Longitude
+				country = record.Country.IsoCode
+				if name, ok := record.City.Names["zh-CN"]; ok {
+					city = name
+				} else {
+					city = record.City.Names["en"]
+				}
+			}
+		}
+
+		if lat != 0 || lon != 0 {
+			data = append(data, PeerGeo{
+				PublicKey: p.PublicKey,
+				Alias:     p.Alias,
+				Endpoint:  p.Endpoint,
+				IsOnline:  p.IsOnline,
+				Lat:       lat,
+				Lon:       lon,
+				City:      city,
+				Country:   country,
+			})
+		}
+	}
+
+	c.JSON(http.StatusOK, data)
+}
+
+func getAdvancedAnalysis(c *gin.Context) {
+	report, err := analysisEngine.GetAdvancedReport()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, report)
 }
