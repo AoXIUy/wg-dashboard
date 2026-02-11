@@ -2275,7 +2275,7 @@ PersistentKeepalive = 25
                     const i = Math.floor(Math.log(b) / Math.log(1024));
                     return (b / Math.pow(1024, i)).toFixed(1) + ' ' + ['B', 'KB', 'MB', 'GB', 'TB'][i];
                 };
-                const fmtRate = (v) => v ? v.toFixed(2) + ' Mbps' : '0 Mbps';
+                const fmtRate = (v) => (v || 0).toFixed(2) + ' Mbps';
                 const sort = (key) => {
                     if (sortKey.value === key) sortDesc.value = !sortDesc.value;
                     else { sortKey.value = key; sortDesc.value = true; }
