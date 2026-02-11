@@ -28,26 +28,57 @@ window.AdvancedApp = {
         });
 
         const bounds = [];
+        const groups = {};
 
+        // Group peers by location coordinates
         peerData.forEach(p => {
             if (p.lat && p.lon) {
-                const marker = L.circleMarker([p.lat, p.lon], {
-                    radius: 5,
+                const key = `${p.lat},${p.lon}`;
+                if (!groups[key]) groups[key] = [];
+                groups[key].push(p);
+            }
+        });
+
+        // Render markers with offset for overlapping peers
+        Object.keys(groups).forEach(key => {
+            const list = groups[key];
+            const baseLat = parseFloat(list[0].lat);
+            const baseLon = parseFloat(list[0].lon);
+
+            list.forEach((p, index) => {
+                let lat = baseLat;
+                let lon = baseLon;
+
+                // Apply circular layout offset if multiple peers share the same location
+                // 0.05 degrees is roughly 5.5km, ensuring distinct visibility
+                if (list.length > 1) {
+                    const angle = (index / list.length) * Math.PI * 2;
+                    const radius = 0.05; // ~5km separation
+                    lat = baseLat + (Math.cos(angle) * radius);
+                    lon = baseLon + (Math.sin(angle) * radius);
+                }
+
+                const marker = L.circleMarker([lat, lon], {
+                    radius: 6,
                     fillColor: p.is_online ? '#10b981' : '#64748b',
                     color: '#fff',
-                    weight: 1,
+                    weight: 2,
                     opacity: 1,
-                    fillOpacity: 0.8
+                    fillOpacity: 0.9
                 }).addTo(this.map);
 
-                marker.bindPopup(`
-                    <b>${p.alias || 'Unknown'}</b><br>
-                    IP: ${p.endpoint}<br>
-                    Location: ${p.city}, ${p.country_code}
-                `);
+                const tooltipContent = `
+                    <div style="min-width: 150px">
+                        <b>${p.alias || 'Unknown'}</b><br>
+                        <span style="font-size: 0.8em; color: #666">IP: ${p.endpoint}</span><br>
+                        <span style="font-size: 0.8em; color: #666">Location: ${p.city}, ${p.country_code}</span><br>
+                        <span style="font-size: 0.8em; color: ${p.is_online ? '#10b981' : '#94a3b8'}">● ${p.is_online ? 'Online' : 'Offline'}</span>
+                    </div>
+                `;
+                marker.bindPopup(tooltipContent);
 
-                bounds.push([p.lat, p.lon]);
-            }
+                bounds.push([lat, lon]);
+            });
         });
 
         if (bounds.length > 0) {
