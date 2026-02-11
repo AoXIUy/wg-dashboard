@@ -93,6 +93,7 @@ func getMapData(c *gin.Context) {
 		City       string   `json:"city"`
 		Country    string   `json:"country_code"`
 		Source     string   `json:"source"`
+		Latency    string   `json:"latency"`
 		RxRate     float64  `json:"rx_rate"`
 		TxRate     float64  `json:"tx_rate"`
 		TotalRx    int64    `json:"total_rx"`
@@ -234,6 +235,7 @@ func getMapData(c *gin.Context) {
 			City:       city,
 			Country:    country,
 			Source:     source,
+			Latency:    getPeerLatency(p.PublicKey),
 			RxRate:     p.RxRate,
 			TxRate:     p.TxRate,
 			TotalRx:    p.ReceiveBytes,

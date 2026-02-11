@@ -18,6 +18,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -87,6 +88,7 @@ type ProcessedLog struct {
 	RxRate    float64
 	TxRate    float64
 	IsOnline  bool
+	Latency   string // e.g. "25ms"
 }
 
 type PeerData struct {
@@ -100,6 +102,7 @@ type PeerData struct {
 	RxRate        float64   `json:"rx_rate"`
 	TxRate        float64   `json:"tx_rate"`
 	IsOnline      bool      `json:"is_online"`
+	Latency       string    `json:"latency"`
 }
 
 type PeerState struct {
@@ -194,6 +197,8 @@ var (
 	sseBroker        *SSEBroker
 	redisEnabled     bool // 🔧 FIX: 添加 Redis 可用性标志
 	analysisEngine   *AnalysisEngine
+	peerLatencyMap   = make(map[string]string)
+	peerLatencyMu    sync.RWMutex
 )
 
 // ================= 主程序 =================
@@ -306,6 +311,12 @@ func main() {
 	go func() {
 		defer wg.Done()
 		startCleaner(ctx)
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		startPinger(ctx)
 	}()
 
 	// 🔧 FIX: 添加 Redis Pub/Sub 订阅者
@@ -796,20 +807,111 @@ func collectPeersData() ([]PeerData, string, int, error) {
 			RxRate:        rxRate,
 			TxRate:        txRate,
 			IsOnline:      isOnline,
+			Latency:       getPeerLatency(pk),
 		})
 	}
 
+	// 排序: 在线 > 流量 > 握手时间
 	sort.Slice(peers, func(i, j int) bool {
 		if peers[i].IsOnline != peers[j].IsOnline {
 			return peers[i].IsOnline
 		}
-		if len(peers[i].AllowedIPs) > 0 && len(peers[j].AllowedIPs) > 0 {
-			return peers[i].AllowedIPs[0] < peers[j].AllowedIPs[0]
+		rateI := peers[i].RxRate + peers[i].TxRate
+		rateJ := peers[j].RxRate + peers[j].TxRate
+		if rateI != rateJ {
+			return rateI > rateJ
 		}
-		return false
+		return peers[i].LastHandshake.After(peers[j].LastHandshake)
 	})
 
-	return peers, device.Name, device.ListenPort, nil
+	return peers, device.PublicKey.String(), device.ListenPort, nil
+}
+
+// ================= Ping 监控逻辑 =================
+
+func getPeerLatency(publicKey string) string {
+	peerLatencyMu.RLock()
+	defer peerLatencyMu.RUnlock()
+	return peerLatencyMap[publicKey]
+}
+
+func startPinger(ctx context.Context) {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			// 获取当前活跃 Peer 列表
+			// 注意: collectPeersData 依赖数据库连接，需确保 DB 已连接
+			if db == nil {
+				continue
+			}
+
+			peers, _, _, err := collectPeersData()
+			if err != nil {
+				continue
+			}
+
+			// 并发 Ping
+			var wg sync.WaitGroup
+			for _, p := range peers {
+				if !p.IsOnline || len(p.AllowedIPs) == 0 {
+					// 清除离线或无 IP Peer 的延迟数据
+					peerLatencyMu.Lock()
+					delete(peerLatencyMap, p.PublicKey)
+					peerLatencyMu.Unlock()
+					continue
+				}
+
+				// 取第一个 IP 作为 Ping 目标 (假设是 VPN 内网 IP)
+				// 去掉 CIDR 后缀
+				targetIP := strings.Split(p.AllowedIPs[0], "/")[0]
+				// 忽略 IPv6 (暂时)
+				if strings.Contains(targetIP, ":") {
+					continue
+				}
+
+				wg.Add(1)
+				go func(pk, ip string) {
+					defer wg.Done()
+					latency := pingHost(ip)
+					
+					peerLatencyMu.Lock()
+					if latency > 0 {
+						peerLatencyMap[pk] = fmt.Sprintf("%dms", latency)
+					} else {
+						// Ping 失败不删除，保留最后一次成功值或过期删除? 暂时先删除
+						delete(peerLatencyMap, pk)
+					}
+					peerLatencyMu.Unlock()
+				}(p.PublicKey, targetIP)
+			}
+			wg.Wait()
+		}
+	}
+}
+
+func pingHost(ip string) int64 {
+	// Windows Ping
+	// -n 1: 发送 1 次
+	// -w 1000: 超时 1000ms
+	cmd := exec.Command("ping", "-n", "1", "-w", "1000", ip)
+	
+	// Linux Ping
+	if runtime.GOOS == "linux" {
+		cmd = exec.Command("ping", "-c", "1", "-W", "1", ip)
+	}
+
+	start := time.Now()
+	err := cmd.Run()
+	if err != nil {
+		return 0
+	}
+	duration := time.Since(start)
+	return duration.Milliseconds()
 }
 
 // ================= 深度分析逻辑 =================
@@ -1603,7 +1705,11 @@ func getPeerHistory(c *gin.Context) {
 		txList = append(txList, b.tx/float64(b.count))
 	}
 
-	c.JSON(http.StatusOK, gin.H{"labels": tsList, "rates": gin.H{"rx": rxList, "tx": txList}})
+	c.JSON(http.StatusOK, gin.H{
+		"labels":  tsList,
+		"rates":   gin.H{"rx": rxList, "tx": txList},
+		"latency": getPeerLatency(pk),
+	})
 }
 
 func getPeerAccessLogs(c *gin.Context) {
@@ -1783,5 +1889,3 @@ func initRedis() {
 	}
 }
 // ================= 地图与高级分析接�?=================
-
-

@@ -52,7 +52,7 @@ window.AdvancedApp = {
                 // 0.8 degrees is visible enough on world map without being too far
                 if (list.length > 1) {
                     const angle = (index / list.length) * Math.PI * 2;
-                    const radius = 0.8;
+                    const radius = 0.15; // 0.15 degrees ~ 15km, tighter cluster
                     lat = baseLat + (Math.cos(angle) * radius);
                     lon = baseLon + (Math.sin(angle) * radius);
                 }
@@ -89,6 +89,7 @@ window.AdvancedApp = {
                                 <span style="opacity:0.7">IP:</span> <span style="font-family:monospace; text-align:right;">${p.endpoint}</span>
                                 <span style="opacity:0.7">Location:</span> <span style="text-align:right;">${p.city || '-'}, ${p.country_code || '-'}</span>
                                 <span style="opacity:0.7">Status:</span> <span style="color:${color}; font-weight:bold;">${isOnline ? 'Online' : 'Offline'}</span>
+                                <span style="opacity:0.7">Ping:</span> <span style="color:#d946ef; font-weight:bold; text-align:right;">${p.latency || '-'}</span>
                                 <span style="opacity:0.7">Up:</span> <span style="color:#3b82f6; text-align:right;">${fmtRate(p.tx_rate)}</span>
                                 <span style="opacity:0.7">Down:</span> <span style="color:#10b981; text-align:right;">${fmtRate(p.rx_rate)}</span>
                             </div>

@@ -1053,6 +1053,10 @@
                                 <h2 class="text-xl font-bold text-slate-800 dark:text-white">{{ modalPeer.alias ||
                                     '详细信息' }}</h2>
                                 <p class="text-xs text-slate-500 font-mono mt-1">{{ modalPeer.public_key }}</p>
+                                <div v-if="modalPeer.latency"
+                                    class="mt-2 inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-emerald-50 text-emerald-600 dark:bg-emerald-500/10 dark:text-emerald-400 border border-emerald-100 dark:border-emerald-500/20">
+                                    <i data-lucide="activity" class="w-3 h-3"></i> {{ modalPeer.latency }}
+                                </div>
                             </div>
                         </div>
                         <button @click="modalPeer=null"
