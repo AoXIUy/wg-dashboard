@@ -730,7 +730,7 @@ func GenerateAnalysisReport(ctx context.Context, days int) (*models.AnalysisRepo
 		// 将 Map 转换为数组 (填充 0-23 小时)
 		// 注意：这里仅仅展示一天内的分布，如果查询多天，这种按小时聚合会将多天同一小时累加
 		// 但根据需求 "24小时活跃度"，通常指最近 24 小时
-		currentHour := time.Now().Hour()
+		// 但根据需求 "24小时活跃度"，通常指最近 24 小时
 		// 我们按时间顺序输出最近 24 小时的数据，或者简单的 0-23 分布
 		// 为了简单起见，且配合前端 Chart (可能是 Bar chart 0-23)，我们输出 0-23
 		for h := 0; h < 24; h++ {
