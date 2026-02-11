@@ -1,3 +1,12 @@
+package main
+
+import (
+	"net"
+	"net/http"
+	"strings"
+
+	"github.com/gin-gonic/gin"
+)
 
 // ================= 地图与高级分析接口 =================
 
