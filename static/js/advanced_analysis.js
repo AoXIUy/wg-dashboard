@@ -52,7 +52,7 @@ window.AdvancedApp = {
                 // 0.8 degrees is visible enough on world map without being too far
                 if (list.length > 1) {
                     const angle = (index / list.length) * Math.PI * 2;
-                    const radius = 0.15; // 0.15 degrees ~ 15km, tighter cluster
+                    const radius = 0.08; // 0.15 degrees ~ 15km, tighter cluster
                     lat = baseLat + (Math.cos(angle) * radius);
                     lon = baseLon + (Math.sin(angle) * radius);
                 }
