@@ -878,61 +878,128 @@
                                 leave-active-class="transform transition ease-in-out duration-300"
                                 leave-from-class="translate-x-0" leave-to-class="translate-x-full">
                                 <div v-if="selectedNode"
-                                    class="absolute right-0 top-0 h-full w-80 bg-white/95 dark:bg-[#0f172a]/95 backdrop-blur-xl border-l border-slate-200 dark:border-white/10 shadow-2xl z-20 p-6 overflow-y-auto">
+                                    class="absolute right-0 top-0 h-full w-80 bg-white/95 dark:bg-[#0f172a]/95 backdrop-blur-xl border-l border-slate-200 dark:border-white/10 shadow-2xl z-20 p-6 overflow-y-auto custom-scrollbar">
 
-                                    <div class="flex justify-between items-start mb-6">
+                                    <!-- 头部 -->
+                                    <div class="flex justify-between items-start mb-5">
                                         <h3
                                             class="text-lg font-bold text-slate-800 dark:text-white flex items-center gap-2">
                                             <i data-lucide="monitor" class="w-5 h-5 text-blue-500"></i>
                                             节点详情
                                         </h3>
                                         <button @click="selectedNode=null"
-                                            class="p-1 hover:bg-slate-100 dark:hover:bg-white/10 rounded-full text-slate-400">
-                                            <i data-lucide="x" class="w-5 h-5"></i>
+                                            class="p-1.5 hover:bg-slate-100 dark:hover:bg-white/10 rounded-lg text-slate-400 transition-colors">
+                                            <i data-lucide="x" class="w-4 h-4"></i>
                                         </button>
                                     </div>
 
-                                    <div class="space-y-6">
-                                        <div
-                                            class="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-100 dark:border-white/5 text-center">
-                                            <div class="text-3xl font-bold mb-1"
-                                                :class="selectedNode.online ? 'text-emerald-500' : 'text-slate-400'">
-                                                {{ selectedNode.online ? '在线' : '离线' }}
+                                    <div class="space-y-4">
+                                        <!-- 状态卡片 -->
+                                        <div class="p-4 rounded-xl bg-gradient-to-br border text-center"
+                                            :class="selectedNode.online ? 'from-emerald-50 to-teal-50 dark:from-emerald-900/20 dark:to-teal-900/10 border-emerald-200 dark:border-emerald-500/30' : 'from-slate-50 to-slate-100 dark:from-slate-800/30 dark:to-slate-900/30 border-slate-200 dark:border-slate-700/30'">
+                                            <div class="flex items-center justify-center gap-2 mb-2">
+                                                <span class="w-2.5 h-2.5 rounded-full"
+                                                    :class="selectedNode.online ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.6)] animate-pulse' : 'bg-slate-400'"></span>
+                                                <div class="text-2xl font-bold"
+                                                    :class="selectedNode.online ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-500 dark:text-slate-400'">
+                                                    {{ selectedNode.online ? '在线' : '离线' }}
+                                                </div>
                                             </div>
+                                            <div class="text-xs font-medium text-slate-600 dark:text-slate-300 mb-1">{{
+                                                selectedNode.alias }}</div>
                                             <div class="text-xs text-slate-400 font-mono">{{ selectedNode.ip }}</div>
                                         </div>
 
-                                        <div class="space-y-3 text-sm">
+                                        <!-- 实时速率 -->
+                                        <div v-if="selectedNode.online" class="grid grid-cols-2 gap-3">
                                             <div
-                                                class="flex justify-between py-2 border-b border-slate-100 dark:border-white/5">
-                                                <span class="text-slate-500">别名</span>
-                                                <span class="font-medium text-slate-700 dark:text-slate-200">{{
-                                                    selectedNode.label }}</span>
+                                                class="p-3 rounded-xl bg-gradient-to-br from-blue-50 to-indigo-50 dark:from-blue-900/20 dark:to-indigo-900/10 border border-blue-100 dark:border-blue-500/20">
+                                                <div class="flex items-center gap-1.5 mb-1">
+                                                    <i data-lucide="arrow-up" class="w-3 h-3 text-blue-500"></i>
+                                                    <div
+                                                        class="text-[10px] text-blue-600 dark:text-blue-400 font-semibold uppercase">
+                                                        上传</div>
+                                                </div>
+                                                <div
+                                                    class="text-lg font-bold font-mono text-blue-600 dark:text-blue-400">
+                                                    {{ fmtRate(selectedNode.txRate) }}
+                                                </div>
                                             </div>
                                             <div
-                                                class="flex justify-between py-2 border-b border-slate-100 dark:border-white/5">
-                                                <span class="text-slate-500">公钥</span>
-                                                <span
-                                                    class="font-mono text-xs text-slate-600 dark:text-slate-400 truncate w-32"
-                                                    :title="selectedNode.id">{{ selectedNode.id }}...</span>
+                                                class="p-3 rounded-xl bg-gradient-to-br from-emerald-50 to-teal-50 dark:from-emerald-900/20 dark:to-teal-900/10 border border-emerald-100 dark:border-emerald-500/20">
+                                                <div class="flex items-center gap-1.5 mb-1">
+                                                    <i data-lucide="arrow-down" class="w-3 h-3 text-emerald-500"></i>
+                                                    <div
+                                                        class="text-[10px] text-emerald-600 dark:text-emerald-400 font-semibold uppercase">
+                                                        下载</div>
+                                                </div>
+                                                <div
+                                                    class="text-lg font-bold font-mono text-emerald-600 dark:text-emerald-400">
+                                                    {{ fmtRate(selectedNode.rxRate) }}
+                                                </div>
                                             </div>
-                                            <div
-                                                class="flex justify-between py-2 border-b border-slate-100 dark:border-white/5">
-                                                <span class="text-slate-500">累计上传</span>
-                                                <span class="font-mono text-blue-600 dark:text-blue-400">{{
+                                        </div>
+
+                                        <!-- 累计流量 -->
+                                        <div
+                                            class="space-y-2 p-3 bg-slate-50 dark:bg-slate-800/30 rounded-xl border border-slate-100 dark:border-white/5">
+                                            <div class="text-[10px] text-slate-400 uppercase font-bold mb-2">累计流量</div>
+                                            <div class="flex justify-between items-center text-xs">
+                                                <span class="text-slate-500">上传 (Tx)</span>
+                                                <span class="font-mono font-bold text-blue-600 dark:text-blue-400">{{
                                                     fmtBytes(selectedNode.tx) }}</span>
                                             </div>
-                                            <div
-                                                class="flex justify-between py-2 border-b border-slate-100 dark:border-white/5">
-                                                <span class="text-slate-500">累计下载</span>
-                                                <span class="font-mono text-emerald-600 dark:text-emerald-400">{{
+                                            <div class="flex justify-between items-center text-xs">
+                                                <span class="text-slate-500">下载 (Rx)</span>
+                                                <span
+                                                    class="font-mono font-bold text-emerald-600 dark:text-emerald-400">{{
                                                     fmtBytes(selectedNode.rx) }}</span>
                                             </div>
+                                        </div>
+
+                                        <!-- 连接信息 -->
+                                        <div
+                                            class="space-y-2 p-3 bg-slate-50 dark:bg-slate-800/30 rounded-xl border border-slate-100 dark:border-white/5">
+                                            <div class="text-[10px] text-slate-400 uppercase font-bold mb-2">连接信息</div>
+                                            <div class="space-y-2 text-xs">
+                                                <div class="flex justify-between items-center">
+                                                    <span class="text-slate-500">端点</span>
+                                                    <span
+                                                        class="font-mono text-slate-700 dark:text-slate-200 truncate max-w-[160px]"
+                                                        :title="selectedNode.endpoint">
+                                                        {{ selectedNode.endpoint }}
+                                                    </span>
+                                                </div>
+                                                <div class="flex justify-between items-center">
+                                                    <span class="text-slate-500">最后握手</span>
+                                                    <span class="text-slate-700 dark:text-slate-200">
+                                                        {{ selectedNode.latestHandshake ?
+                                                        formatLastSeen(selectedNode.latestHandshake) : '从未' }}
+                                                    </span>
+                                                </div>
+                                                <div class="flex justify-between items-center">
+                                                    <span class="text-slate-500">最后活跃</span>
+                                                    <span class="text-slate-700 dark:text-slate-200">
+                                                        {{ formatLastSeen(selectedNode.lastSeen) }}
+                                                    </span>
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <!-- 公钥 (可复制) -->
+                                        <div
+                                            class="p-3 bg-slate-50 dark:bg-slate-800/30 rounded-xl border border-slate-100 dark:border-white/5">
+                                            <div class="flex items-center justify-between mb-2">
+                                                <div class="text-[10px] text-slate-400 uppercase font-bold">公钥</div>
+                                                <button @click="copyText(selectedNode.fullKey, '公钥')"
+                                                    class="p-1 hover:bg-slate-200 dark:hover:bg-slate-700 rounded text-slate-400 hover:text-blue-500 transition-colors"
+                                                    title="复制公钥">
+                                                    <i data-lucide="copy" class="w-3 h-3"></i>
+                                                </button>
+                                            </div>
                                             <div
-                                                class="flex justify-between py-2 border-b border-slate-100 dark:border-white/5">
-                                                <span class="text-slate-500">最后活跃</span>
-                                                <span class="text-slate-600 dark:text-slate-300">{{
-                                                    formatLastSeen(selectedNode.lastSeen) }}</span>
+                                                class="text-[10px] font-mono text-slate-600 dark:text-slate-400 break-all leading-relaxed bg-white dark:bg-slate-900/50 p-2 rounded border border-slate-200 dark:border-white/5">
+                                                {{ selectedNode.fullKey }}
                                             </div>
                                         </div>
                                     </div>
@@ -1882,7 +1949,17 @@
                             ip: p.allowed_ips[0],
                             tx: p.transmit_bytes,
                             rx: p.receive_bytes,
-                            lastSeen: p.last_seen_time
+                            lastSeen: p.last_seen_time,
+                            // 新增字段：实时速率
+                            txRate: p.tx_rate || 0,
+                            rxRate: p.rx_rate || 0,
+                            // 新增字段：连接信息
+                            endpoint: p.endpoint || '未连接',
+                            latestHandshake: p.latest_handshake || 0,
+                            // 完整公钥用于复制
+                            fullKey: p.public_key,
+                            // 别名
+                            alias: p.alias || '未命名客户端'
                         });
 
                         edges.push({
