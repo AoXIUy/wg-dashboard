@@ -413,13 +413,14 @@ func (ae *AnalysisEngine) RefinedAnalysis() (OptimalTime, [][]float64, []HourlyT
 
 func (ae *AnalysisEngine) AnalyzePeers() ([]PeerStats, error) {
 	// 查询过去 7 天的流量统计
+	// [修改] 使用 rx_rate/tx_rate 积分估算流量，而非直接均值或 sum bytes
 	query := `
 		SELECT 
 			peer_public_key,
-			SUM(rx_bytes) as total_rx,
-			SUM(tx_bytes) as total_tx,
+			SUM(rx_rate) as dim_rx_rate,
+			SUM(tx_rate) as dim_tx_rate,
 			COUNT(*) as total_records,
-			SUM(CASE WHEN is_online = 1 THEN 1 ELSE 0 END) as online_records,
+			SUM(is_online) as online_records,
 			MAX(timestamp) as last_seen
 		FROM traffic_history
 		WHERE timestamp > ?
@@ -436,22 +437,28 @@ func (ae *AnalysisEngine) AnalyzePeers() ([]PeerStats, error) {
 
 	for rows.Next() {
 		var pk string
-		var totalRx, totalTx int64
+		var dimRxRate, dimTxRate float64
 		var totalRecords, onlineRecords int
 		var lastSeen int64
 
-		if err := rows.Scan(&pk, &totalRx, &totalTx, &totalRecords, &onlineRecords, &lastSeen); err != nil {
+		if err := rows.Scan(&pk, &dimRxRate, &dimTxRate, &totalRecords, &onlineRecords, &lastSeen); err != nil {
 			continue
 		}
 
-		// 计算在线率
+		// 1. 流量估算 (Rate Integration)
+		// TotalBytes ≈ Sum(Rate_Mbps) * Window_sec * 1,000,000 / 8
+		const WindowSec = 6.0
+		totalRx := int64(dimRxRate * WindowSec * 1000000 / 8)
+		totalTx := int64(dimTxRate * WindowSec * 1000000 / 8)
+
+		// 2. 健康分计算
+		healthScore := calculateHealthScore(onlineRecords, totalRecords, lastSeen)
+
+		// 3. 在线率
 		uptimePercent := 0.0
 		if totalRecords > 0 {
 			uptimePercent = (float64(onlineRecords) / float64(totalRecords)) * 100
 		}
-
-		// 计算健康分
-		healthScore := calculateHealthScore(uptimePercent, lastSeen, totalRx+totalTx)
 
 		// 获取别名
 		alias := ""
@@ -477,37 +484,29 @@ func (ae *AnalysisEngine) AnalyzePeers() ([]PeerStats, error) {
 	return peerStats, nil
 }
 
-func calculateHealthScore(uptimePercent float64, lastSeen int64, totalTraffic int64) float64 {
-	// 基础分：在线率占 60%
-	score := uptimePercent * 0.6
-
-	// 近期活跃加成：最多 30 分
-	now := time.Now().Unix()
-	timeSinceLastSeen := now - lastSeen
-	if timeSinceLastSeen < 3600 { // 1小时内
-		score += 30
-	} else if timeSinceLastSeen < 86400 { // 24小时内
-		score += 20
-	} else if timeSinceLastSeen < 604800 { // 7天内
-		score += 10
+func calculateHealthScore(onlineRecords, totalRecords int, lastSeen int64) float64 {
+	if totalRecords == 0 {
+		return 0
 	}
 
-	// 流量活跃度加成：最多 10 分
-	if totalTraffic > 10*1024*1024*1024 { // 10GB+
-		score += 10
-	} else if totalTraffic > 1024*1024*1024 { // 1GB+
-		score += 5
-	} else if totalTraffic > 100*1024*1024 { // 100MB+
-		score += 2
+	// 1. 基础分 (BaseScore) = 在线率
+	baseScore := (float64(onlineRecords) / float64(totalRecords)) * 100
+
+	// 2. 惩罚分 (Penalty)
+	penalty := 0.0
+	// 僵尸节点惩罚：如果 LastSeen 早于 24小时前，扣除 30 分
+	if lastSeen < time.Now().Add(-24*time.Hour).Unix() {
+		penalty = 30.0
 	}
 
-	// 限制在 0-100 范围内
-	if score > 100 {
-		score = 100
-	}
+	// 3. 最终得分
+	score := baseScore - penalty
+
+	// 边界处理
 	if score < 0 {
 		score = 0
 	}
+	// 理论上 baseScore <= 100, penalty >= 0, 所以 score <= 100
 
 	return math.Round(score)
 }
