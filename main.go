@@ -535,7 +535,7 @@ func startBackgroundServices(ctx context.Context, wg *sync.WaitGroup, rawChan ch
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		startSSEBroker()
+		startSSEBroker(ctx)
 	}()
 
 	if redisEnabled {
@@ -678,9 +678,12 @@ func loginHandler(c *gin.Context) {
 
 // ================= SSE 优化逻辑 =================
 
-func startSSEBroker() {
+func startSSEBroker(ctx context.Context) {
+	defer logger.Println("SSE Broker 已停止")
 	for {
 		select {
+		case <-ctx.Done():
+			return
 		case s := <-sseBroker.NewClients:
 			sseBroker.mu.Lock()
 			sseBroker.Clients[s] = true

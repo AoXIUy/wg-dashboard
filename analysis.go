@@ -509,7 +509,7 @@ func calculateHealthScore(uptimePercent float64, lastSeen int64, totalTraffic in
 		score = 0
 	}
 
-	return score
+	return math.Round(score)
 }
 
 func (ae *AnalysisEngine) GetAdvancedReport() (AdvancedReport, error) {
