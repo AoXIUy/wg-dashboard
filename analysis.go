@@ -47,12 +47,23 @@ type HourlyTraffic struct {
 	TxSum float64 `json:"tx_sum"`
 }
 
+type PeerStats struct {
+	PublicKey     string  `json:"public_key"`
+	Alias         string  `json:"alias"`
+	TotalRx       int64   `json:"total_rx"`
+	TotalTx       int64   `json:"total_tx"`
+	HealthScore   float64 `json:"health_score"`   // 0-100
+	UptimePercent float64 `json:"uptime_percent"` // 0-100
+	LastSeenTime  int64   `json:"last_seen_time"`
+}
+
 type AdvancedReport struct {
-	Anomalies    []AnomalyEvent `json:"anomalies"`
+	Anomalies     []AnomalyEvent  `json:"anomalies"`
 	ChurnRisks    []ChurnRisk     `json:"churn_risks"`
 	OptimalTime   OptimalTime     `json:"optimal_time"`
 	HourlyProfile []HourlyTraffic `json:"hourly_profile"`
 	GlobalHeat    [][]float64     `json:"global_heatmap"` // 7x24 grid
+	Peers         []PeerStats     `json:"peers"`
 }
 
 // ================= 1. 异常检测 (Anomaly Detection) =================
@@ -398,6 +409,109 @@ func (ae *AnalysisEngine) RefinedAnalysis() (OptimalTime, [][]float64, []HourlyT
 	}, heatmap, hourlyProfile, nil
 }
 
+// ================= 4. Peer 统计分析 (Peer Statistics) =================
+
+func (ae *AnalysisEngine) AnalyzePeers() ([]PeerStats, error) {
+	// 查询过去 7 天的流量统计
+	query := `
+		SELECT 
+			peer_public_key,
+			SUM(rx_bytes) as total_rx,
+			SUM(tx_bytes) as total_tx,
+			COUNT(*) as total_records,
+			SUM(CASE WHEN is_online = 1 THEN 1 ELSE 0 END) as online_records,
+			MAX(timestamp) as last_seen
+		FROM traffic_history
+		WHERE timestamp > ?
+		GROUP BY peer_public_key`
+
+	sevenDaysAgo := time.Now().Add(-7 * 24 * time.Hour).Unix()
+	rows, err := ae.db.Query(query, sevenDaysAgo)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var peerStats []PeerStats
+
+	for rows.Next() {
+		var pk string
+		var totalRx, totalTx int64
+		var totalRecords, onlineRecords int
+		var lastSeen int64
+
+		if err := rows.Scan(&pk, &totalRx, &totalTx, &totalRecords, &onlineRecords, &lastSeen); err != nil {
+			continue
+		}
+
+		// 计算在线率
+		uptimePercent := 0.0
+		if totalRecords > 0 {
+			uptimePercent = (float64(onlineRecords) / float64(totalRecords)) * 100
+		}
+
+		// 计算健康分
+		healthScore := calculateHealthScore(uptimePercent, lastSeen, totalRx+totalTx)
+
+		// 获取别名
+		alias := ""
+		aliasQuery := "SELECT alias FROM peer_aliases WHERE public_key = ?"
+		ae.db.QueryRow(aliasQuery, pk).Scan(&alias)
+
+		peerStats = append(peerStats, PeerStats{
+			PublicKey:     pk,
+			Alias:         alias,
+			TotalRx:       totalRx,
+			TotalTx:       totalTx,
+			HealthScore:   healthScore,
+			UptimePercent: uptimePercent,
+			LastSeenTime:  lastSeen,
+		})
+	}
+
+	// 按流量排序（降序）
+	sort.Slice(peerStats, func(i, j int) bool {
+		return (peerStats[i].TotalRx + peerStats[i].TotalTx) > (peerStats[j].TotalRx + peerStats[j].TotalTx)
+	})
+
+	return peerStats, nil
+}
+
+func calculateHealthScore(uptimePercent float64, lastSeen int64, totalTraffic int64) float64 {
+	// 基础分：在线率占 60%
+	score := uptimePercent * 0.6
+
+	// 近期活跃加成：最多 30 分
+	now := time.Now().Unix()
+	timeSinceLastSeen := now - lastSeen
+	if timeSinceLastSeen < 3600 { // 1小时内
+		score += 30
+	} else if timeSinceLastSeen < 86400 { // 24小时内
+		score += 20
+	} else if timeSinceLastSeen < 604800 { // 7天内
+		score += 10
+	}
+
+	// 流量活跃度加成：最多 10 分
+	if totalTraffic > 10*1024*1024*1024 { // 10GB+
+		score += 10
+	} else if totalTraffic > 1024*1024*1024 { // 1GB+
+		score += 5
+	} else if totalTraffic > 100*1024*1024 { // 100MB+
+		score += 2
+	}
+
+	// 限制在 0-100 范围内
+	if score > 100 {
+		score = 100
+	}
+	if score < 0 {
+		score = 0
+	}
+
+	return score
+}
+
 func (ae *AnalysisEngine) GetAdvancedReport() (AdvancedReport, error) {
 	anomalies, err := ae.DetectAnomalies()
 	if err != nil {
@@ -414,11 +528,17 @@ func (ae *AnalysisEngine) GetAdvancedReport() (AdvancedReport, error) {
 		return AdvancedReport{}, err
 	}
 
+	peerStats, err := ae.AnalyzePeers()
+	if err != nil {
+		return AdvancedReport{}, err
+	}
+
 	return AdvancedReport{
 		Anomalies:     anomalies,
 		ChurnRisks:    churns,
 		OptimalTime:   optTime,
 		GlobalHeat:    heatmap,
 		HourlyProfile: hourlyProfile,
+		Peers:         peerStats,
 	}, nil
 }
