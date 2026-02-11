@@ -730,8 +730,7 @@
                         </div>
                     </div>
 
-                    <div
-                        class="p-0 overflow-y-auto custom-scrollbar flex-1 bg-slate-50/30 dark:bg-slate-900/20 relative flex flex-col">
+                    <div class="p-0 flex-1 bg-slate-50/30 dark:bg-slate-900/20 relative flex flex-col overflow-hidden">
                         <div v-if="analysisLoading"
                             class="absolute inset-0 flex flex-col items-center justify-center z-10 bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm">
                             <div
@@ -740,7 +739,7 @@
                             <span class="text-slate-500 text-sm">正在分析网络数据...</span>
                         </div>
 
-                        <div v-show="analysisTab==='overview'" class="p-6">
+                        <div v-show="analysisTab==='overview'" class="p-6 h-full overflow-y-auto custom-scrollbar">
                             <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
                                 <div
                                     class="bg-slate-50 dark:bg-slate-800/30 p-5 rounded-2xl border border-slate-100 dark:border-white/5 flex flex-col">
@@ -826,7 +825,7 @@
                             </div>
                         </div>
 
-                        <div v-show="analysisTab==='map'" class="relative w-full h-full min-h-[500px]">
+                        <div v-show="analysisTab==='map'" class="relative w-full h-full bg-slate-50 dark:bg-[#0b1121]">
                             <div id="worldMap" class="absolute inset-0 z-0"></div>
                         </div>
 
@@ -940,7 +939,8 @@
                             </Transition>
                         </div>
 
-                        <div v-show="analysisTab==='heatmap'" class="p-6 lg:p-10 space-y-8">
+                        <div v-show="analysisTab==='heatmap'"
+                            class="p-6 lg:p-10 space-y-8 h-full overflow-y-auto custom-scrollbar">
 
                             <div
                                 class="glass-card bg-white dark:bg-[#0f172a] rounded-3xl p-6 shadow-xl border border-slate-100 dark:border-white/5 relative overflow-hidden">
@@ -1808,6 +1808,8 @@
                 const changeAnalysisTab = async (tab) => {
                     analysisTab.value = tab;
                     await nextTick();
+                    // 强制重新计算布局
+                    window.dispatchEvent(new Event('resize'));
                     if (tab === 'map') initMap();
                     if (tab === 'topology') initTopology();
                     if (tab === 'heatmap') initHeatmap();
@@ -1828,6 +1830,11 @@
                     const container = document.getElementById('networkTopology');
                     if (!container) return;
 
+                    // 清理旧实例及观察者
+                    if (window.topologyResizeObserver) {
+                        window.topologyResizeObserver.disconnect();
+                        window.topologyResizeObserver = null;
+                    }
                     if (networkInstance) {
                         networkInstance.destroy();
                         networkInstance = null;
@@ -1920,6 +1927,14 @@
 
                     const data = { nodes: new vis.DataSet(nodes), edges: new vis.DataSet(edges) };
                     networkInstance = new vis.Network(container, data, options);
+
+                    // 添加尺寸监听
+                    window.topologyResizeObserver = new ResizeObserver(() => {
+                        if (networkInstance) {
+                            networkInstance.fit();
+                        }
+                    });
+                    window.topologyResizeObserver.observe(container);
 
                     networkInstance.on("click", function (params) {
                         if (params.nodes.length > 0) {
@@ -2261,6 +2276,10 @@ PersistentKeepalive = 25
                 });
 
                 onUnmounted(() => {
+                    if (window.topologyResizeObserver) {
+                        window.topologyResizeObserver.disconnect();
+                        window.topologyResizeObserver = null;
+                    }
                     if (es.value) es.value.close();
                     [mainChartInst, detailChartInst, pieChart, barChart].forEach(c => c?.destroy());
                     if (networkInstance) networkInstance.destroy();
