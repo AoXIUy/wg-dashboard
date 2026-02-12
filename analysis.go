@@ -460,10 +460,8 @@ func (ae *AnalysisEngine) AnalyzePeers() ([]PeerStats, error) {
 			uptimePercent = (float64(onlineRecords) / float64(totalRecords)) * 100
 		}
 
-		// 获取别名
-		alias := ""
-		aliasQuery := "SELECT alias FROM peer_aliases WHERE public_key = ?"
-		ae.db.QueryRow(aliasQuery, pk).Scan(&alias)
+		// 获取别名（使用内存缓存，避免 N+1 查询）
+		alias, _ := aliasCache.Get(pk)
 
 		peerStats = append(peerStats, PeerStats{
 			PublicKey:     pk,
