@@ -125,16 +125,12 @@ func getMapData(c *gin.Context) {
 		if ip != nil && !ip.IsPrivate() && !ip.IsLoopback() {
 			// 1. 尝试本地 GeoIP 数据库 (优先)
 			localSuccess := false
-			if geoCity != nil {
-				if record, err := geoCity.City(ip); err == nil {
-					lat = record.Location.Latitude
-					lon = record.Location.Longitude
-					country = record.Country.IsoCode
-					if name, ok := record.City.Names["zh-CN"]; ok {
-						city = name
-					} else {
-						city = record.City.Names["en"]
-					}
+			if ipProvider != nil {
+				if info, err := ipProvider.GetInfo(ip); err == nil {
+					lat = info.Latitude
+					lon = info.Longitude
+					country = info.CountryCode
+					city = info.City
 					
 					if lat != 0 && lon != 0 && city != "" {
 						localSuccess = true
@@ -206,16 +202,12 @@ func getMapData(c *gin.Context) {
 							}
 						} else {
 							// 回退使用本地不完整数据
-							if geoCity != nil {
-								if record, err := geoCity.City(ip); err == nil {
-									lat = record.Location.Latitude
-									lon = record.Location.Longitude
-									country = record.Country.IsoCode
-									if name, ok := record.City.Names["zh-CN"]; ok {
-										city = name
-									} else {
-										city = record.City.Names["en"]
-									}
+							if ipProvider != nil {
+								if info, err := ipProvider.GetInfo(ip); err == nil {
+									lat = info.Latitude
+									lon = info.Longitude
+									country = info.CountryCode
+									city = info.City
 									source = "local_fallback"
 								}
 							}
