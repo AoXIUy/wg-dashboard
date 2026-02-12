@@ -574,6 +574,15 @@ func startBackgroundServices(ctx context.Context, wg *sync.WaitGroup, rawChan ch
 		defer wg.Done()
 		startCacheRefresher(ctx)
 	}()
+
+	// 定期预计算分析报告（方案三）
+	if redisEnabled {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			startAnalysisPrecompute(ctx)
+		}()
+	}
 }
 
 func startCacheRefresher(ctx context.Context) {
