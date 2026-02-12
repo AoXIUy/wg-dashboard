@@ -36,6 +36,7 @@ import (
 	"github.com/shirou/gopsutil/v3/mem"
 	"golang.zx2c4.com/wireguard/wgctrl"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
+	"gopkg.in/natefinch/lumberjack.v2"
 
 	"wg-dashboard/pkg/ipapi"
 )
@@ -400,8 +401,30 @@ var (
 
 // ================= 主程序 =================
 
+// initLogger 初始化日志系统，输出到文件和控制台
+func initLogger() {
+	// 日志文件配置(使用 lumberjack 实现轮转)
+	logFile := &lumberjack.Logger{
+		Filename:   "./app.log",  // 日志文件路径
+		MaxSize:    100,          // 单文件最大 100MB
+		MaxBackups: 7,            // 最多保留 7 个备份
+		MaxAge:     30,           // 保留 30 天
+		Compress:   true,         // 压缩旧日志
+		LocalTime:  true,         // 使用本地时间
+	}
+
+	// 同时输出到文件和控制台
+	multiWriter := io.MultiWriter(os.Stdout, logFile)
+
+	// 创建全局 logger
+	logger = log.New(multiWriter, "[WG-Monitor] ", log.LstdFlags|log.Lshortfile)
+
+	logger.Println("日志系统初始化完成，日志将输出到 app.log")
+}
+
 func main() {
-	logger = log.New(os.Stdout, "[WG-Monitor] ", log.LstdFlags|log.Lshortfile)
+	// 初始化日志系统
+	initLogger()
 
 	flag.StringVar(&WGInterface, "iface", "wg0", "WireGuard 接口名称")
 	flag.StringVar(&ServerPort, "port", ":18080", "Web 监听端口")
