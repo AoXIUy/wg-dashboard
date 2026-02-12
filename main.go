@@ -31,12 +31,13 @@ import (
 	"github.com/go-redis/redis/v8"
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/oschwald/geoip2-golang"
 	"github.com/shirou/gopsutil/v3/cpu"
 	"github.com/shirou/gopsutil/v3/host"
 	"github.com/shirou/gopsutil/v3/mem"
 	"golang.zx2c4.com/wireguard/wgctrl"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
+
+	"wg-dashboard/pkg/ipapi"
 )
 
 //go:embed index.html
@@ -385,8 +386,7 @@ var (
 	configMu       sync.Mutex
 	publicKeyRegex = regexp.MustCompile(`^[A-Za-z0-9+/]{43}=$`)
 	logger         *log.Logger
-	geoCity        *geoip2.Reader
-	geoAsn         *geoip2.Reader
+	ipProvider     ipapi.Provider
 	sseBroker      *SSEBroker
 	redisEnabled   bool
 	aliasCache     *AliasCache
@@ -455,28 +455,40 @@ func main() {
 }
 
 func initGeoIP() {
+	// 检查数据库文件是否存在
+	cityExists := false
+	asnExists := false
+
 	if _, err := os.Stat(GeoCityPath); err == nil {
-		var err error
-		geoCity, err = geoip2.Open(GeoCityPath)
-		if err != nil {
-			logger.Printf("GeoIP City 加载失败: %v", err)
-		} else {
-			logger.Println("GeoIP City 数据库已加载")
-		}
+		cityExists = true
 	} else {
 		logger.Printf("GeoIP City 数据库不存在: %s", GeoCityPath)
 	}
 
 	if _, err := os.Stat(GeoASNPath); err == nil {
-		var err error
-		geoAsn, err = geoip2.Open(GeoASNPath)
-		if err != nil {
-			logger.Printf("GeoIP ASN 加载失败: %v", err)
-		} else {
-			logger.Println("GeoIP ASN 数据库已加载")
-		}
+		asnExists = true
 	} else {
 		logger.Printf("GeoIP ASN 数据库不存在: %s", GeoASNPath)
+	}
+
+	// 如果至少有一个数据库文件存在，则初始化 provider
+	if cityExists || asnExists {
+		cityPath := ""
+		asnPath := ""
+		if cityExists {
+			cityPath = GeoCityPath
+		}
+		if asnExists {
+			asnPath = GeoASNPath
+		}
+
+		provider, err := ipapi.NewGeoLite2Provider(cityPath, asnPath)
+		if err != nil {
+			logger.Printf("GeoIP 初始化失败: %v", err)
+		} else {
+			ipProvider = provider
+			logger.Println("GeoIP 数据库已加载")
+		}
 	}
 }
 
@@ -502,11 +514,10 @@ func closeDB() {
 			logger.Printf("数据库关闭失败: %v", err)
 		}
 	}
-	if geoCity != nil {
-		geoCity.Close()
-	}
-	if geoAsn != nil {
-		geoAsn.Close()
+	if ipProvider != nil {
+		if err := ipProvider.Close(); err != nil {
+			logger.Printf("GeoIP 关闭失败: %v", err)
+		}
 	}
 }
 
@@ -824,28 +835,19 @@ func getGeoIPInfo(c *gin.Context) {
 
 	resp := gin.H{}
 
-	if geoCity != nil {
-		if record, err := geoCity.City(ip); err == nil {
-			resp["country_code"] = record.Country.IsoCode
-			if name, ok := record.City.Names["zh-CN"]; ok && name != "" {
-				resp["city"] = name
-			} else {
-				resp["city"] = record.City.Names["en"]
-			}
-			resp["latitude"] = record.Location.Latitude
-			resp["longitude"] = record.Location.Longitude
-		}
-	}
-
-	if geoAsn != nil {
-		if record, err := geoAsn.ASN(ip); err == nil {
-			resp["asn"] = record.AutonomousSystemOrganization
-			resp["asn_number"] = record.AutonomousSystemNumber
+	if ipProvider != nil {
+		info, err := ipProvider.GetInfo(ip)
+		if err == nil {
+			resp["country_code"] = info.CountryCode
+			resp["city"] = info.City
+			resp["latitude"] = info.Latitude
+			resp["longitude"] = info.Longitude
+			resp["asn"] = info.ASN
+			resp["asn_number"] = info.ASNNumber
 		}
 	}
 
 	c.JSON(http.StatusOK, resp)
-
 }
 
 
@@ -2087,18 +2089,12 @@ func generateAnalysisReport(ctx context.Context, days int) (*AnalysisReport, err
 			}
 			
 			ip := net.ParseIP(host)
-			if ip != nil && !ip.IsPrivate() && !ip.IsLoopback() {
-				if geoCity != nil {
-					if record, err := geoCity.City(ip); err == nil {
-						if record.City.Names["zh-CN"] != "" {
-							city = record.City.Names["zh-CN"]
-						} else {
-							city = record.City.Names["en"]
-						}
-						countryCode = record.Country.IsoCode
-						latitude = record.Location.Latitude
-						longitude = record.Location.Longitude
-					}
+			if ip != nil && !ip.IsPrivate() && !ip.IsLoopback() && ipProvider != nil {
+				if info, err := ipProvider.GetInfo(ip); err == nil {
+					city = info.City
+					countryCode = info.CountryCode
+					latitude = info.Latitude
+					longitude = info.Longitude
 				}
 			}
 		}
