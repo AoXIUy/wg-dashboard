@@ -98,18 +98,20 @@ type ProcessedLog struct {
 }
 
 type PeerData struct {
-	PublicKey     string    `json:"public_key"`
-	AllowedIPs    []string  `json:"allowed_ips"`
-	Endpoint      string    `json:"endpoint"`
-	LastHandshake time.Time `json:"last_handshake"`
-	ReceiveBytes  int64     `json:"receive_bytes"`
-	TransmitBytes int64     `json:"transmit_bytes"`
-	Alias         string    `json:"alias"`
-	RxRate        float64   `json:"rx_rate"`
-	TxRate        float64   `json:"tx_rate"`
-	IsOnline      bool      `json:"is_online"`
-	Latency       string    `json:"latency"`
-	LastSeen time.Time
+	PublicKey       string    `json:"public_key"`
+	AllowedIPs      []string  `json:"allowed_ips"`
+	Endpoint        string    `json:"endpoint"`
+	LastHandshake   time.Time `json:"last_handshake"`
+	LatestHandshake int64     `json:"latest_handshake"` // Unix 时间戳，用于前端拓扑图
+	ReceiveBytes    int64     `json:"receive_bytes"`
+	TransmitBytes   int64     `json:"transmit_bytes"`
+	Alias           string    `json:"alias"`
+	RxRate          float64   `json:"rx_rate"`
+	TxRate          float64   `json:"tx_rate"`
+	IsOnline        bool      `json:"is_online"`
+	Latency         string    `json:"latency"`
+	LastSeen        time.Time
+	LastSeenTime    int64     `json:"last_seen_time"` // Unix 时间戳，用于前端拓扑图
 }
 
 type PeerState struct {
@@ -1006,6 +1008,7 @@ func collectPeersData() ([]PeerData, string, int, error) {
 
 		var rxRate, txRate float64
 		var isOnline bool
+		var lastSeenTime int64
 
 		// 从 Redis 获取实时状态
 		if redisEnabled && redisCmds != nil {
@@ -1014,6 +1017,7 @@ func collectPeersData() ([]PeerData, string, int, error) {
 				txRate, _ = strconv.ParseFloat(val["tx_rate"], 64)
 				onlineInt, _ := strconv.Atoi(val["is_online"])
 				isOnline = onlineInt == 1
+				lastSeenTime, _ = strconv.ParseInt(val["last_seen"], 10, 64)
 			}
 		}
 
@@ -1025,18 +1029,26 @@ func collectPeersData() ([]PeerData, string, int, error) {
 		// 从缓存获取别名
 		alias, _ := aliasCache.Get(pk)
 
+		// 计算 LatestHandshake Unix 时间戳
+		var latestHandshake int64
+		if !p.LastHandshakeTime.IsZero() {
+			latestHandshake = p.LastHandshakeTime.Unix()
+		}
+
 		peers = append(peers, PeerData{
-			PublicKey:     pk,
-			AllowedIPs:    ips,
-			Endpoint:      ep,
-			LastHandshake: p.LastHandshakeTime,
-			ReceiveBytes:  p.ReceiveBytes,
-			TransmitBytes: p.TransmitBytes,
-			Alias:         alias,
-			RxRate:        rxRate,
-			TxRate:        txRate,
-			IsOnline:      isOnline,
-			Latency:       getPeerLatency(pk),
+			PublicKey:       pk,
+			AllowedIPs:      ips,
+			Endpoint:        ep,
+			LastHandshake:   p.LastHandshakeTime,
+			LatestHandshake: latestHandshake,
+			ReceiveBytes:    p.ReceiveBytes,
+			TransmitBytes:   p.TransmitBytes,
+			Alias:           alias,
+			RxRate:          rxRate,
+			TxRate:          txRate,
+			IsOnline:        isOnline,
+			Latency:         getPeerLatency(pk),
+			LastSeenTime:    lastSeenTime,
 		})
 	}
 
