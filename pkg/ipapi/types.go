@@ -10,6 +10,7 @@ type Info struct {
 	Longitude   float64 `json:"longitude"`
 	ASN         string  `json:"asn"`
 	ASNNumber   uint    `json:"asn_number"`
+	Source      string  `json:"source"` // 数据来源: "local", "external", "local_fallback"
 }
 
 // Provider 定义了 IP 信息查询的统一接口

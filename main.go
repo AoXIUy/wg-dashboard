@@ -402,7 +402,7 @@ func main() {
 	logger = log.New(os.Stdout, "[WG-Monitor] ", log.LstdFlags|log.Lshortfile)
 
 	flag.StringVar(&WGInterface, "iface", "wg0", "WireGuard 接口名称")
-	flag.StringVar(&ServerPort, "port", ":8080", "Web 监听端口")
+	flag.StringVar(&ServerPort, "port", ":18080", "Web 监听端口")
 	flag.StringVar(&MySQLDSN, "mysql", "wg_user:cloud123@tcp(127.0.0.1:3306)/wg_monitor?charset=utf8mb4&parseTime=True&loc=Local", "MySQL 连接字符串")
 	flag.StringVar(&RedisAddr, "redis", "192.168.10.119:6379", "Redis 地址")
 	flag.IntVar(&Retention, "days", 30, "数据保留天数")
@@ -482,7 +482,7 @@ func initGeoIP() {
 			asnPath = GeoASNPath
 		}
 
-		provider, err := ipapi.NewGeoLite2Provider(cityPath, asnPath)
+		provider, err := ipapi.NewGeoLite2Provider(cityPath, asnPath, true) // 启用外部 API 回退
 		if err != nil {
 			logger.Printf("GeoIP 初始化失败: %v", err)
 		} else {
