@@ -1806,7 +1806,7 @@
                     if (!modalPeer.value) return;
                     chartLoading.value = true;
                     try {
-                        const res = await axios.get(`/api/history/${encodeURIComponent(modalPeer.value.public_key)}?period=${historyPeriod.value}`, { headers: { Authorization: `Bearer ${token.value}` } });
+                        const res = await axios.get(`/api/history?publickey=${encodeURIComponent(modalPeer.value.public_key)}&period=${historyPeriod.value}`, { headers: { Authorization: `Bearer ${token.value}` } });
                         nextTick(() => renderDetailChart(res.data));
                     } catch { showToast('无法加载历史数据', 'error'); }
                     finally { chartLoading.value = false; }
@@ -1817,7 +1817,7 @@
                     logsLoading.value = true;
                     accessLogs.value = [];
                     try {
-                        const res = await axios.get(`/api/history/logs/${encodeURIComponent(modalPeer.value.public_key)}`, {
+                        const res = await axios.get(`/api/history/logs?publickey=${encodeURIComponent(modalPeer.value.public_key)}`, {
                             headers: { Authorization: `Bearer ${token.value}` }
                         });
                         accessLogs.value = res.data.logs || [];
