@@ -31,12 +31,14 @@ import (
 	"github.com/go-redis/redis/v8"
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/oschwald/geoip2-golang"
 	"github.com/shirou/gopsutil/v3/cpu"
 	"github.com/shirou/gopsutil/v3/host"
 	"github.com/shirou/gopsutil/v3/mem"
 	"golang.zx2c4.com/wireguard/wgctrl"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
+	"gopkg.in/natefinch/lumberjack.v2"
+
+	"wg-dashboard/pkg/ipapi"
 )
 
 //go:embed index.html
@@ -97,18 +99,20 @@ type ProcessedLog struct {
 }
 
 type PeerData struct {
-	PublicKey     string    `json:"public_key"`
-	AllowedIPs    []string  `json:"allowed_ips"`
-	Endpoint      string    `json:"endpoint"`
-	LastHandshake time.Time `json:"last_handshake"`
-	ReceiveBytes  int64     `json:"receive_bytes"`
-	TransmitBytes int64     `json:"transmit_bytes"`
-	Alias         string    `json:"alias"`
-	RxRate        float64   `json:"rx_rate"`
-	TxRate        float64   `json:"tx_rate"`
-	IsOnline      bool      `json:"is_online"`
-	Latency       string    `json:"latency"`
-	LastSeen time.Time
+	PublicKey       string    `json:"public_key"`
+	AllowedIPs      []string  `json:"allowed_ips"`
+	Endpoint        string    `json:"endpoint"`
+	LastHandshake   time.Time `json:"last_handshake"`
+	LatestHandshake int64     `json:"latest_handshake"` // Unix 时间戳，用于前端拓扑图
+	ReceiveBytes    int64     `json:"receive_bytes"`
+	TransmitBytes   int64     `json:"transmit_bytes"`
+	Alias           string    `json:"alias"`
+	RxRate          float64   `json:"rx_rate"`
+	TxRate          float64   `json:"tx_rate"`
+	IsOnline        bool      `json:"is_online"`
+	Latency         string    `json:"latency"`
+	LastSeen        time.Time
+	LastSeenTime    int64     `json:"last_seen_time"` // Unix 时间戳，用于前端拓扑图
 }
 
 type PeerState struct {
@@ -385,8 +389,7 @@ var (
 	configMu       sync.Mutex
 	publicKeyRegex = regexp.MustCompile(`^[A-Za-z0-9+/]{43}=$`)
 	logger         *log.Logger
-	geoCity        *geoip2.Reader
-	geoAsn         *geoip2.Reader
+	ipProvider     ipapi.Provider
 	sseBroker      *SSEBroker
 	redisEnabled   bool
 	aliasCache     *AliasCache
@@ -398,11 +401,33 @@ var (
 
 // ================= 主程序 =================
 
+// initLogger 初始化日志系统，输出到文件和控制台
+func initLogger() {
+	// 日志文件配置(使用 lumberjack 实现轮转)
+	logFile := &lumberjack.Logger{
+		Filename:   "./app.log",  // 日志文件路径
+		MaxSize:    100,          // 单文件最大 100MB
+		MaxBackups: 7,            // 最多保留 7 个备份
+		MaxAge:     30,           // 保留 30 天
+		Compress:   true,         // 压缩旧日志
+		LocalTime:  true,         // 使用本地时间
+	}
+
+	// 同时输出到文件和控制台
+	multiWriter := io.MultiWriter(os.Stdout, logFile)
+
+	// 创建全局 logger
+	logger = log.New(multiWriter, "[WG-Monitor] ", log.LstdFlags|log.Lshortfile)
+
+	logger.Println("日志系统初始化完成，日志将输出到 app.log")
+}
+
 func main() {
-	logger = log.New(os.Stdout, "[WG-Monitor] ", log.LstdFlags|log.Lshortfile)
+	// 初始化日志系统
+	initLogger()
 
 	flag.StringVar(&WGInterface, "iface", "wg0", "WireGuard 接口名称")
-	flag.StringVar(&ServerPort, "port", ":8080", "Web 监听端口")
+	flag.StringVar(&ServerPort, "port", ":18080", "Web 监听端口")
 	flag.StringVar(&MySQLDSN, "mysql", "wg_user:cloud123@tcp(127.0.0.1:3306)/wg_monitor?charset=utf8mb4&parseTime=True&loc=Local", "MySQL 连接字符串")
 	flag.StringVar(&RedisAddr, "redis", "192.168.10.119:6379", "Redis 地址")
 	flag.IntVar(&Retention, "days", 30, "数据保留天数")
@@ -455,28 +480,40 @@ func main() {
 }
 
 func initGeoIP() {
+	// 检查数据库文件是否存在
+	cityExists := false
+	asnExists := false
+
 	if _, err := os.Stat(GeoCityPath); err == nil {
-		var err error
-		geoCity, err = geoip2.Open(GeoCityPath)
-		if err != nil {
-			logger.Printf("GeoIP City 加载失败: %v", err)
-		} else {
-			logger.Println("GeoIP City 数据库已加载")
-		}
+		cityExists = true
 	} else {
 		logger.Printf("GeoIP City 数据库不存在: %s", GeoCityPath)
 	}
 
 	if _, err := os.Stat(GeoASNPath); err == nil {
-		var err error
-		geoAsn, err = geoip2.Open(GeoASNPath)
-		if err != nil {
-			logger.Printf("GeoIP ASN 加载失败: %v", err)
-		} else {
-			logger.Println("GeoIP ASN 数据库已加载")
-		}
+		asnExists = true
 	} else {
 		logger.Printf("GeoIP ASN 数据库不存在: %s", GeoASNPath)
+	}
+
+	// 如果至少有一个数据库文件存在，则初始化 provider
+	if cityExists || asnExists {
+		cityPath := ""
+		asnPath := ""
+		if cityExists {
+			cityPath = GeoCityPath
+		}
+		if asnExists {
+			asnPath = GeoASNPath
+		}
+
+		provider, err := ipapi.NewGeoLite2Provider(cityPath, asnPath, true) // 启用外部 API 回退
+		if err != nil {
+			logger.Printf("GeoIP 初始化失败: %v", err)
+		} else {
+			ipProvider = provider
+			logger.Println("GeoIP 数据库已加载")
+		}
 	}
 }
 
@@ -502,11 +539,10 @@ func closeDB() {
 			logger.Printf("数据库关闭失败: %v", err)
 		}
 	}
-	if geoCity != nil {
-		geoCity.Close()
-	}
-	if geoAsn != nil {
-		geoAsn.Close()
+	if ipProvider != nil {
+		if err := ipProvider.Close(); err != nil {
+			logger.Printf("GeoIP 关闭失败: %v", err)
+		}
 	}
 }
 
@@ -561,6 +597,15 @@ func startBackgroundServices(ctx context.Context, wg *sync.WaitGroup, rawChan ch
 		defer wg.Done()
 		startCacheRefresher(ctx)
 	}()
+
+	// 定期预计算分析报告（方案三）
+	if redisEnabled {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			startAnalysisPrecompute(ctx)
+		}()
+	}
 }
 
 func startCacheRefresher(ctx context.Context) {
@@ -824,28 +869,19 @@ func getGeoIPInfo(c *gin.Context) {
 
 	resp := gin.H{}
 
-	if geoCity != nil {
-		if record, err := geoCity.City(ip); err == nil {
-			resp["country_code"] = record.Country.IsoCode
-			if name, ok := record.City.Names["zh-CN"]; ok && name != "" {
-				resp["city"] = name
-			} else {
-				resp["city"] = record.City.Names["en"]
-			}
-			resp["latitude"] = record.Location.Latitude
-			resp["longitude"] = record.Location.Longitude
-		}
-	}
-
-	if geoAsn != nil {
-		if record, err := geoAsn.ASN(ip); err == nil {
-			resp["asn"] = record.AutonomousSystemOrganization
-			resp["asn_number"] = record.AutonomousSystemNumber
+	if ipProvider != nil {
+		info, err := ipProvider.GetInfo(ip)
+		if err == nil {
+			resp["country_code"] = info.CountryCode
+			resp["city"] = info.City
+			resp["latitude"] = info.Latitude
+			resp["longitude"] = info.Longitude
+			resp["asn"] = info.ASN
+			resp["asn_number"] = info.ASNNumber
 		}
 	}
 
 	c.JSON(http.StatusOK, resp)
-
 }
 
 
@@ -1004,6 +1040,7 @@ func collectPeersData() ([]PeerData, string, int, error) {
 
 		var rxRate, txRate float64
 		var isOnline bool
+		var lastSeenTime int64
 
 		// 从 Redis 获取实时状态
 		if redisEnabled && redisCmds != nil {
@@ -1012,6 +1049,7 @@ func collectPeersData() ([]PeerData, string, int, error) {
 				txRate, _ = strconv.ParseFloat(val["tx_rate"], 64)
 				onlineInt, _ := strconv.Atoi(val["is_online"])
 				isOnline = onlineInt == 1
+				lastSeenTime, _ = strconv.ParseInt(val["last_seen"], 10, 64)
 			}
 		}
 
@@ -1023,18 +1061,26 @@ func collectPeersData() ([]PeerData, string, int, error) {
 		// 从缓存获取别名
 		alias, _ := aliasCache.Get(pk)
 
+		// 计算 LatestHandshake Unix 时间戳
+		var latestHandshake int64
+		if !p.LastHandshakeTime.IsZero() {
+			latestHandshake = p.LastHandshakeTime.Unix()
+		}
+
 		peers = append(peers, PeerData{
-			PublicKey:     pk,
-			AllowedIPs:    ips,
-			Endpoint:      ep,
-			LastHandshake: p.LastHandshakeTime,
-			ReceiveBytes:  p.ReceiveBytes,
-			TransmitBytes: p.TransmitBytes,
-			Alias:         alias,
-			RxRate:        rxRate,
-			TxRate:        txRate,
-			IsOnline:      isOnline,
-			Latency:       getPeerLatency(pk),
+			PublicKey:       pk,
+			AllowedIPs:      ips,
+			Endpoint:        ep,
+			LastHandshake:   p.LastHandshakeTime,
+			LatestHandshake: latestHandshake,
+			ReceiveBytes:    p.ReceiveBytes,
+			TransmitBytes:   p.TransmitBytes,
+			Alias:           alias,
+			RxRate:          rxRate,
+			TxRate:          txRate,
+			IsOnline:        isOnline,
+			Latency:         getPeerLatency(pk),
+			LastSeenTime:    lastSeenTime,
 		})
 	}
 
@@ -2087,18 +2133,12 @@ func generateAnalysisReport(ctx context.Context, days int) (*AnalysisReport, err
 			}
 			
 			ip := net.ParseIP(host)
-			if ip != nil && !ip.IsPrivate() && !ip.IsLoopback() {
-				if geoCity != nil {
-					if record, err := geoCity.City(ip); err == nil {
-						if record.City.Names["zh-CN"] != "" {
-							city = record.City.Names["zh-CN"]
-						} else {
-							city = record.City.Names["en"]
-						}
-						countryCode = record.Country.IsoCode
-						latitude = record.Location.Latitude
-						longitude = record.Location.Longitude
-					}
+			if ip != nil && !ip.IsPrivate() && !ip.IsLoopback() && ipProvider != nil {
+				if info, err := ipProvider.GetInfo(ip); err == nil {
+					city = info.City
+					countryCode = info.CountryCode
+					latitude = info.Latitude
+					longitude = info.Longitude
 				}
 			}
 		}

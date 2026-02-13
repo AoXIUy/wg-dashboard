@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"database/sql"
+	"encoding/json"
 	"math"
 	"sort"
 	"time"
@@ -460,10 +462,8 @@ func (ae *AnalysisEngine) AnalyzePeers() ([]PeerStats, error) {
 			uptimePercent = (float64(onlineRecords) / float64(totalRecords)) * 100
 		}
 
-		// 获取别名
-		alias := ""
-		aliasQuery := "SELECT alias FROM peer_aliases WHERE public_key = ?"
-		ae.db.QueryRow(aliasQuery, pk).Scan(&alias)
+		// 获取别名（使用内存缓存，避免 N+1 查询）
+		alias, _ := aliasCache.Get(pk)
 
 		peerStats = append(peerStats, PeerStats{
 			PublicKey:     pk,
@@ -512,6 +512,21 @@ func calculateHealthScore(onlineRecords, totalRecords int, lastSeen int64) float
 }
 
 func (ae *AnalysisEngine) GetAdvancedReport() (AdvancedReport, error) {
+	// 1. 尝试从 Redis 获取缓存
+	if redisEnabled && rdb != nil {
+		cacheKey := "wg:cache:advanced_report"
+		val, err := rdb.Get(context.Background(), cacheKey).Result()
+		if err == nil {
+			var report AdvancedReport
+			if json.Unmarshal([]byte(val), &report) == nil {
+				metrics.IncCacheHits()
+				return report, nil
+			}
+		}
+		metrics.IncCacheMisses()
+	}
+
+	// 2. 缓存未命中，执行原有查询逻辑
 	anomalies, err := ae.DetectAnomalies()
 	if err != nil {
 		return AdvancedReport{}, err
@@ -532,12 +547,21 @@ func (ae *AnalysisEngine) GetAdvancedReport() (AdvancedReport, error) {
 		return AdvancedReport{}, err
 	}
 
-	return AdvancedReport{
+	report := AdvancedReport{
 		Anomalies:     anomalies,
 		ChurnRisks:    churns,
 		OptimalTime:   optTime,
 		GlobalHeat:    heatmap,
 		HourlyProfile: hourlyProfile,
 		Peers:         peerStats,
-	}, nil
+	}
+
+	// 3. 写入 Redis 缓存（1 分钟 TTL）
+	if redisEnabled && rdb != nil {
+		if jsonBytes, err := json.Marshal(report); err == nil {
+			rdb.Set(context.Background(), "wg:cache:advanced_report", jsonBytes, 1*time.Minute)
+		}
+	}
+
+	return report, nil
 }
