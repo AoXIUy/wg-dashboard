@@ -2389,6 +2389,24 @@ func removePeer(c *gin.Context) {
 		return
 	}
 
+	// 清理数据库数据
+	ctx := context.Background()
+
+	// 删除别名
+	_, err := db.ExecContext(ctx, "DELETE FROM peer_aliases WHERE public_key = ?", pubKey)
+	if err != nil {
+		logger.Printf("删除别名失败: %v", err)
+		// 不影响主流程，仅记录日志
+	}
+
+	// 删除流量历史
+	result, err := db.ExecContext(ctx, "DELETE FROM traffic_history WHERE peer_public_key = ?", pubKey)
+	if err != nil {
+		logger.Printf("删除流量历史失败: %v", err)
+	} else if rows, _ := result.RowsAffected(); rows > 0 {
+		logger.Printf("已删除客户端 %s 的 %d 条历史记录", pubKey[:8], rows)
+	}
+
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
