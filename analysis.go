@@ -463,7 +463,18 @@ func (ae *AnalysisEngine) AnalyzePeers() ([]PeerStats, error) {
 		}
 
 		// 获取别名（使用内存缓存，避免 N+1 查询）
-		alias, _ := aliasCache.Get(pk)
+		alias, ok := aliasCache.Get(pk)
+		// 如果缓存未命中,直接查询数据库作为备份
+		if !ok || alias == "" {
+			var dbAlias string
+			err := ae.db.QueryRow("SELECT alias FROM peer_aliases WHERE public_key = ?", pk).Scan(&dbAlias)
+			if err == nil && dbAlias != "" {
+				alias = dbAlias
+				// 更新缓存
+				aliasCache.Set(pk, alias)
+			}
+		}
+
 
 		peerStats = append(peerStats, PeerStats{
 			PublicKey:     pk,

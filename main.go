@@ -2100,7 +2100,18 @@ func generateAnalysisReport(ctx context.Context, days int) (*AnalysisReport, err
 			score = 0
 		}
 
-		alias, _ := aliasCache.Get(pk)
+		alias, ok := aliasCache.Get(pk)
+		// 如果缓存未命中,直接查询数据库作为备份
+		if !ok || alias == "" {
+			var dbAlias string
+			err := db.QueryRowContext(ctx, "SELECT alias FROM peer_aliases WHERE public_key = ?", pk).Scan(&dbAlias)
+			if err == nil && dbAlias != "" {
+				alias = dbAlias
+				// 更新缓存
+				aliasCache.Set(pk, alias)
+			}
+		}
+
 
 		// 填充扩展信息
 		var allowedIPs []string
