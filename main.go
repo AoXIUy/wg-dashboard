@@ -221,10 +221,9 @@ func (ac *AliasCache) Get(pk string) (string, bool) {
 	ac.mu.RLock()
 	defer ac.mu.RUnlock()
 
-	if time.Since(ac.lastUpdate) > ac.ttl {
-		return "", false
-	}
-
+	// [修复] 移除 TTL 过期时直接返回空的逻辑（stale-while-revalidate 策略）
+	// 缓存过期由 NeedsRefresh() + startCacheRefresher 后台异步处理
+	// Get 始终返回已有数据，避免概览等分析接口在刷新窗口期获取不到别名
 	alias, ok := ac.data[pk]
 	return alias, ok
 }
