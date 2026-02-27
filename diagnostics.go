@@ -187,13 +187,22 @@ func tracerouteHandler(c *gin.Context) {
 		outStr = string(out)
 		parseWindowsTracert(&res, outStr)
 	} else {
-		// 使用 nexttrace 进行路由追踪
-		cmd = exec.CommandContext(ctx, "/usr/bin/nexttrace", ipStr)
-		out, _ := cmd.CombinedOutput()
+		// 优先尝试 ICMP 模式（-I），避免 UDP raw socket 权限问题
+		// 若系统安装的是 traceroute-nanog 或有 setuid，则 -I 一般能直接使用
+		cmd = exec.CommandContext(ctx, "traceroute", "-n", "-I", "-w", "1", "-m", "30", "-q", "3", ipStr)
+		out, err := cmd.CombinedOutput()
 		outStr = string(out)
 
+		// 如果 ICMP 模式报错（如不支持 -I 或权限不足），回退到 UDP 模式
+		if err != nil && len(out) < 10 {
+			cmd2 := exec.CommandContext(ctx, "traceroute", "-n", "-w", "1", "-m", "30", "-q", "3", ipStr)
+			out2, _ := cmd2.CombinedOutput()
+			if len(out2) > len(out) {
+				outStr = string(out2)
+			}
+		}
 		res.RawOutput = outStr
-		parseNextTraceLinux(&res, outStr)
+		parseLinuxTraceroute(&res, outStr)
 	}
 
 	if ipProvider != nil {
@@ -216,47 +225,60 @@ func tracerouteHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, res)
 }
 
-func parseNextTraceLinux(res *TracerouteResponse, out string) {
+// reMsToken 匹配独立的 ms 单位 token （如 "1.23ms" 或数字后面紧跟的 "ms"）
+var reMsValue = regexp.MustCompile(`^(\d+\.?\d*)ms$`)
+
+func parseLinuxTraceroute(res *TracerouteResponse, out string) {
 	lines := strings.Split(out, "\n")
-	var currentHop *TracerouteHop
 	expectedDistance := 1
 
 	for _, line := range lines {
-		trimmedLine := strings.TrimSpace(line)
-		if trimmedLine == "" || strings.HasPrefix(trimmedLine, "NextTrace") || strings.HasPrefix(trimmedLine, "[NextTrace") || strings.HasPrefix(trimmedLine, "IP Geo") || strings.HasPrefix(trimmedLine, "traceroute") || strings.HasPrefix(trimmedLine, "MapTrace") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "traceroute") {
 			continue
 		}
 
-		parts := strings.Fields(trimmedLine)
-		if len(parts) == 0 {
+		parts := strings.Fields(line)
+		if len(parts) < 2 {
 			continue
 		}
 
-		// 如果行首是数字，说明这是一跳的开头
 		distance, err := strconv.Atoi(parts[0])
-		if err == nil {
-			if currentHop != nil {
-				res.Hops = append(res.Hops, *currentHop)
-			}
+		if err != nil {
+			continue
+		}
 
-			// 补齐中间可能缺失的跳点 (全*超时节点)
-			for expectedDistance < distance {
-				res.Hops = append(res.Hops, TracerouteHop{
-					Distance: expectedDistance,
-					Address:  "*",
-				})
-				expectedDistance++
-			}
+		for expectedDistance < distance {
+			res.Hops = append(res.Hops, TracerouteHop{
+				Distance: expectedDistance,
+				Address:  "*",
+			})
+			expectedDistance++
+		}
 
-			currentHop = &TracerouteHop{
-				Distance: distance,
-				Address:  parts[1],
-			}
-			expectedDistance = distance + 1
-		} else if currentHop != nil && strings.Contains(line, "ms") {
-			// 这很可能是刚才那一跳的延迟时间行: "  0.94 ms / 0.70 ms / 1.30 ms"
+		hop := TracerouteHop{
+			Distance: distance,
+		}
+
+		// 全部是 * 的跳点：parts[1] == "*"
+		if parts[1] == "*" {
+			hop.Address = "*"
+		} else {
+			hop.Address = parts[1]
 			var times []float64
-			for _, p := range parts {
+			for _, p := range parts[2:] {
+				// 跳过单独的 "ms" token 和 "*"
+				if p == "ms" || p == "*" {
+					continue
+				}
+				// 处理 "1.23ms" 格式（ms 紧贴数字）
+				if m := reMsValue.FindStringSubmatch(p); len(m) == 2 {
+					if t, e := strconv.ParseFloat(m[1], 64); e == nil {
+						times = append(times, t)
+					}
+					continue
+				}
+				// 处理纯数字（"1.23 ms" 格式，数字与 ms 分离）
 				if t, e := strconv.ParseFloat(p, 64); e == nil {
 					times = append(times, t)
 				}
@@ -272,15 +294,14 @@ func parseNextTraceLinux(res *TracerouteResponse, out string) {
 					}
 					sum += t
 				}
-				currentHop.MinRtt = min
-				currentHop.MaxRtt = max
-				currentHop.AvgRtt = sum / float64(len(times))
+				hop.MinRtt = min
+				hop.MaxRtt = max
+				hop.AvgRtt = sum / float64(len(times))
 			}
 		}
-	}
-	// 保存最后一跳记录
-	if currentHop != nil {
-		res.Hops = append(res.Hops, *currentHop)
+
+		res.Hops = append(res.Hops, hop)
+		expectedDistance = distance + 1
 	}
 }
 
