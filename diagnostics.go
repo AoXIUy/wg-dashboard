@@ -42,8 +42,10 @@ type TracerouteHop struct {
 }
 
 type TracerouteResponse struct {
-	Target string          `json:"target"`
-	Hops   []TracerouteHop `json:"hops"`
+	Target    string          `json:"target"`
+	Hops      []TracerouteHop `json:"hops"`
+	RawOutput string          `json:"raw_output,omitempty"`
+	Error     string          `json:"error,omitempty"`
 }
 
 func pingHandler(c *gin.Context) {
@@ -71,7 +73,12 @@ func pingHandler(c *gin.Context) {
 	if runtime.GOOS == "windows" {
 		cmd = exec.CommandContext(ctx, "ping", "-n", strconv.Itoa(count), ipStr)
 	} else {
-		cmd = exec.CommandContext(ctx, "ping", "-c", strconv.Itoa(count), "-W", "1", ipStr)
+		// 检测 IPv6，Linux 需要 ping -6 才能正确 ping IPv6 地址
+		if ip.To4() == nil {
+			cmd = exec.CommandContext(ctx, "ping", "-6", "-c", strconv.Itoa(count), "-W", "1", ipStr)
+		} else {
+			cmd = exec.CommandContext(ctx, "ping", "-c", strconv.Itoa(count), "-W", "1", ipStr)
+		}
 	}
 
 	out, _ := cmd.CombinedOutput()
@@ -163,18 +170,11 @@ func tracerouteHandler(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	var cmd *exec.Cmd
-	if runtime.GOOS == "windows" {
-		cmd = exec.CommandContext(ctx, "tracert", "-d", "-h", "30", "-w", "1000", ipStr)
-	} else {
-		cmd = exec.CommandContext(ctx, "traceroute", "-n", "-w", "1", "-m", "30", "-q", "3", ipStr)
-	}
-
-	out, _ := cmd.CombinedOutput()
-	outStr := string(out)
+	var outStr string
 
 	res := TracerouteResponse{
 		Target: ipStr,
@@ -182,8 +182,26 @@ func tracerouteHandler(c *gin.Context) {
 	}
 
 	if runtime.GOOS == "windows" {
+		cmd = exec.CommandContext(ctx, "tracert", "-d", "-h", "30", "-w", "1000", ipStr)
+		out, _ := cmd.CombinedOutput()
+		outStr = string(out)
 		parseWindowsTracert(&res, outStr)
 	} else {
+		// 优先尝试 ICMP 模式（-I），避免 UDP raw socket 权限问题
+		// 若系统安装的是 traceroute-nanog 或有 setuid，则 -I 一般能直接使用
+		cmd = exec.CommandContext(ctx, "traceroute", "-n", "-I", "-w", "1", "-m", "30", "-q", "3", ipStr)
+		out, err := cmd.CombinedOutput()
+		outStr = string(out)
+
+		// 如果 ICMP 模式报错（如不支持 -I 或权限不足），回退到 UDP 模式
+		if err != nil && len(out) < 10 {
+			cmd2 := exec.CommandContext(ctx, "traceroute", "-n", "-w", "1", "-m", "30", "-q", "3", ipStr)
+			out2, _ := cmd2.CombinedOutput()
+			if len(out2) > len(out) {
+				outStr = string(out2)
+			}
+		}
+		res.RawOutput = outStr
 		parseLinuxTraceroute(&res, outStr)
 	}
 
@@ -206,6 +224,9 @@ func tracerouteHandler(c *gin.Context) {
 
 	c.JSON(http.StatusOK, res)
 }
+
+// reMsToken 匹配独立的 ms 单位 token （如 "1.23ms" 或数字后面紧跟的 "ms"）
+var reMsValue = regexp.MustCompile(`^(\d+\.?\d*)ms$`)
 
 func parseLinuxTraceroute(res *TracerouteResponse, out string) {
 	lines := strings.Split(out, "\n")
@@ -239,16 +260,26 @@ func parseLinuxTraceroute(res *TracerouteResponse, out string) {
 			Distance: distance,
 		}
 
+		// 全部是 * 的跳点：parts[1] == "*"
 		if parts[1] == "*" {
 			hop.Address = "*"
 		} else {
 			hop.Address = parts[1]
 			var times []float64
 			for _, p := range parts[2:] {
-				if strings.HasPrefix(p, "ms") || p == "*" {
+				// 跳过单独的 "ms" token 和 "*"
+				if p == "ms" || p == "*" {
 					continue
 				}
-				if t, err := strconv.ParseFloat(p, 64); err == nil {
+				// 处理 "1.23ms" 格式（ms 紧贴数字）
+				if m := reMsValue.FindStringSubmatch(p); len(m) == 2 {
+					if t, e := strconv.ParseFloat(m[1], 64); e == nil {
+						times = append(times, t)
+					}
+					continue
+				}
+				// 处理纯数字（"1.23 ms" 格式，数字与 ms 分离）
+				if t, e := strconv.ParseFloat(p, 64); e == nil {
 					times = append(times, t)
 				}
 			}

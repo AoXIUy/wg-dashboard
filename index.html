@@ -1148,9 +1148,9 @@
                                             class="w-full bg-slate-100 dark:bg-slate-800 border-none rounded-xl px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-teal-500">
                                             <option value="">手动输入...</option>
                                             <option v-for="p in peers" :key="p.public_key"
-                                                :value="p.endpoint ? p.endpoint.split(':')[0] : p.allowed_ips[0]">
+                                                :value="p.endpoint ? extractEndpointIP(p.endpoint) : p.allowed_ips[0]">
                                                 {{ p.alias || p.public_key.substring(0,8) }} ({{ p.endpoint ?
-                                                p.endpoint.split(':')[0] : p.allowed_ips[0] }})
+                                                extractEndpointIP(p.endpoint) : p.allowed_ips[0] }})
                                             </option>
                                         </select>
                                     </div>
@@ -1589,6 +1589,18 @@
         Chart.defaults.plugins.tooltip.cornerRadius = 8;
         Chart.defaults.plugins.tooltip.displayColors = true;
         Chart.defaults.plugins.tooltip.boxPadding = 4;
+
+        // 从 endpoint 字符串中提取 IP，兼容 IPv4 和 IPv6
+        // IPv4: "1.2.3.4:51820" -> "1.2.3.4"
+        // IPv6: "[2001:db8::1]:51820" -> "2001:db8::1"
+        function extractEndpointIP(endpoint) {
+            if (!endpoint) return '';
+            if (endpoint.startsWith('[')) {
+                const m = endpoint.match(/^\[([^\]]+)\]/);
+                return m ? m[1] : endpoint;
+            }
+            return endpoint.split(':')[0];
+        }
 
         // 防抖函数
         function debounce(func, wait) {

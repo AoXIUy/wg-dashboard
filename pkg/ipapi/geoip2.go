@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/oschwald/geoip2-golang"
@@ -128,10 +129,46 @@ func (p *GeoLite2Provider) GetInfo(ip net.IP) (*Info, error) {
 	return info, nil
 }
 
+// ================= SEC-7: GeoIP 外部 API 限速器 =================
+// ip-api.com 免费版限制：45 次/分钟。此处设置保守上限 40 次/分钟。
+
+var (
+	apiCallCount    int64     // 当前分钟内调用次数（原子操作）
+	apiWindowStart  time.Time // 当前计数窗口开始时间
+	apiRateLimitMu  sync.Mutex
+)
+
+func init() {
+	apiWindowStart = time.Now()
+}
+
+// apiRateAllow 检查是否允许本次外部 API 调用
+func apiRateAllow() bool {
+	apiRateLimitMu.Lock()
+	defer apiRateLimitMu.Unlock()
+
+	now := time.Now()
+	if now.Sub(apiWindowStart) >= time.Minute {
+		// 重置窗口
+		apiWindowStart = now
+		apiCallCount = 0
+	}
+	if apiCallCount >= 40 {
+		return false
+	}
+	apiCallCount++
+	return true
+}
+
 // fetchFromAPI 从外部 API 获取地理位置信息
+// SEC-7: 改用 HTTPS 防止中间人篡改，并增加速率限制防止触发 ip-api.com 封禁
 func fetchFromAPI(ip string) (lat, lon float64, city, countryCode string, err error) {
-	// 使用 ip-api.com (免费版，支持中文)
-	url := fmt.Sprintf("http://ip-api.com/json/%s?lang=zh-CN", ip)
+	if !apiRateAllow() {
+		return 0, 0, "", "", fmt.Errorf("外部 GeoIP API 调用频率已达上限，本次跳过")
+	}
+
+	// SEC-7: 使用 HTTPS 端点
+	url := fmt.Sprintf("https://ip-api.com/json/%s?lang=zh-CN&fields=status,countryCode,city,lat,lon", ip)
 
 	client := http.Client{
 		Timeout: 5 * time.Second,
