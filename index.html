@@ -1168,13 +1168,13 @@
                                     <div>
                                         <label class="block text-xs text-slate-500 mb-1">Ping 次数</label>
                                         <div class="flex items-center gap-3">
-                                            <button @click="if(diagCount>1) diagCount--"
+                                            <button @click="diagCount > 1 && diagCount--"
                                                 class="p-2 bg-slate-100 dark:bg-slate-800 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-700"><i
                                                     data-lucide="minus" class="w-4 h-4"></i></button>
                                             <span
                                                 class="font-mono text-sm font-bold w-4 text-center text-slate-700 dark:text-slate-300">{{
                                                 diagCount }}</span>
-                                            <button @click="if(diagCount<20) diagCount++"
+                                            <button @click="diagCount < 20 && diagCount++"
                                                 class="p-2 bg-slate-100 dark:bg-slate-800 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-700"><i
                                                     data-lucide="plus" class="w-4 h-4"></i></button>
                                         </div>
