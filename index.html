@@ -1590,18 +1590,6 @@
         Chart.defaults.plugins.tooltip.displayColors = true;
         Chart.defaults.plugins.tooltip.boxPadding = 4;
 
-        // 从 endpoint 字符串中提取 IP，兼容 IPv4 和 IPv6
-        // IPv4: "1.2.3.4:51820" -> "1.2.3.4"
-        // IPv6: "[2001:db8::1]:51820" -> "2001:db8::1"
-        function extractEndpointIP(endpoint) {
-            if (!endpoint) return '';
-            if (endpoint.startsWith('[')) {
-                const m = endpoint.match(/^\[([^\]]+)\]/);
-                return m ? m[1] : endpoint;
-            }
-            return endpoint.split(':')[0];
-        }
-
         // 防抖函数
         function debounce(func, wait) {
             let timeout;
@@ -1647,6 +1635,16 @@
                 const diagLoading = ref(false);
                 const pingResult = ref(null);
                 const tracerouteResult = ref(null);
+
+                // 从 endpoint 提取 IP，兼容 IPv4 ("1.2.3.4:port") 和 IPv6 ("[::1]:port")
+                const extractEndpointIP = (endpoint) => {
+                    if (!endpoint) return '';
+                    if (endpoint.startsWith('[')) {
+                        const m = endpoint.match(/^\[([^\]]+)\]/);
+                        return m ? m[1] : endpoint;
+                    }
+                    return endpoint.split(':')[0];
+                };
 
                 const openDiagnostics = () => {
                     showDiagnostics.value = true;
@@ -2686,7 +2684,8 @@ PersistentKeepalive = 25
                     showIpDetailModal, selectedIpInfo, openIpInfo,
                     analysisTab, changeAnalysisTab,
                     selectedNode, physicsEnabled, resetTopologyZoom, togglePhysics,
-                    showDiagnostics, diagTab, diagTarget, diagCount, diagLoading, pingResult, tracerouteResult, openDiagnostics, executePing, executeTraceroute
+                    showDiagnostics, diagTab, diagTarget, diagCount, diagLoading, pingResult, tracerouteResult, openDiagnostics, executePing, executeTraceroute,
+                    extractEndpointIP
                 };
             }
         }).mount('#app');
