@@ -1638,6 +1638,8 @@ func setupAPIRoutes(r *gin.Engine) {
 			authorized.GET("/geoip", getGeoIPInfo)
 			authorized.GET("/map/data", getMapData)
 			authorized.GET("/analysis", getAdvancedAnalysis)
+			authorized.GET("/ping/execute", pingHandler)
+			authorized.GET("/traceroute/execute", tracerouteHandler)
 
 			manage := authorized.Group("/manage")
 			{
