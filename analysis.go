@@ -71,63 +71,75 @@ type AdvancedReport struct {
 // ================= 1. 异常检测 (Anomaly Detection) =================
 
 func (ae *AnalysisEngine) DetectAnomalies() ([]AnomalyEvent, error) {
-	// 获取过去 24 小时的流量数据用于建立基准
+	var anomalies []AnomalyEvent
+
+	// 1. 尝试从 Redis 获取预计算的基线 (Baseline)
+	baselines := make(map[string]PeerBaseline)
+	if redisEnabled && rdb != nil {
+		cacheKey := "wg:cache:peer_baseline"
+		val, err := rdb.Get(context.Background(), cacheKey).Result()
+		if err == nil && val != "" {
+			_ = json.Unmarshal([]byte(val), &baselines)
+		}
+	}
+
+	if len(baselines) == 0 {
+		logger.Println("未找到 Peer 基线缓存，跳过异常检测")
+		// 如果必须立刻计算也能在此直接发起查询，但基于 KISS 原则我们等待预计算完成
+		return anomalies, nil
+	}
+
+	// 2. 获取过去 15 分钟的最新流量数据，以此检查近期是否有突发或持续高负载
 	query := `
-		SELECT peer_public_key, rx_bytes, tx_bytes, timestamp 
+		SELECT peer_public_key, (rx_bytes + tx_bytes) / 1048576 AS total_mb
 		FROM traffic_history 
 		WHERE timestamp > ? 
 		ORDER BY timestamp ASC`
 	
-	yesterday := time.Now().Add(-24 * time.Hour).Unix()
-	rows, err := ae.db.Query(query, yesterday)
+	fifteenMinsAgo := time.Now().Add(-15 * time.Minute).Unix()
+	rows, err := ae.db.Query(query, fifteenMinsAgo)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	// 聚合每个 Peer 的流量数据
-	peerTraffic := make(map[string][]float64) // 存储每个时间点的总流量 (Rx+Tx)
-	
+	// 聚合每个 Peer 近 15 分钟的各个时间点流量
+	recentTraffic := make(map[string][]float64)
 	for rows.Next() {
 		var pk string
-		var rx, tx int64
-		var ts int64
-		if err := rows.Scan(&pk, &rx, &tx, &ts); err != nil {
+		var totalMB float64
+		if err := rows.Scan(&pk, &totalMB); err != nil {
 			continue
 		}
-		totalMB := float64(rx+tx) / 1024 / 1024
-		peerTraffic[pk] = append(peerTraffic[pk], totalMB)
+		recentTraffic[pk] = append(recentTraffic[pk], totalMB)
 	}
 
-	var anomalies []AnomalyEvent
-
-	for pk, history := range peerTraffic {
-		if len(history) < 10 {
-			continue // 数据太少，无法分析
+	// 3. 实时异常裁定
+	for pk, history := range recentTraffic {
+		if len(history) == 0 {
+			continue
 		}
 
-		// 计算均值和标准差
-		mean, stdDev := calculateStats(history)
+		baseline, hasBaseline := baselines[pk]
+		if !hasBaseline || baseline.StdDevMB == 0 {
+			continue // 缺乏基线或无法计算 Z-Score
+		}
 
-		// 获取最近的一个流量点 (假设最后一条记录是最近的)
 		currentTraffic := history[len(history)-1]
 
 		// 规则 1: 突发流量 (Z-Score > 3) 且 绝对值 > 50MB (避免小流量误报)
-		if stdDev > 0 {
-			zScore := (currentTraffic - mean) / stdDev
-			if zScore > 3 && currentTraffic > 50 {
-				anomalies = append(anomalies, AnomalyEvent{
-					PublicKey: pk,
-					Type:      "traffic_spike",
-					Severity:  "high",
-					Message:   "检测到异常流量突发 (Z-Score > 3)",
-					Time:      time.Now(),
-				})
-			}
+		zScore := (currentTraffic - baseline.MeanMB) / baseline.StdDevMB
+		if zScore > 3 && currentTraffic > 50 {
+			anomalies = append(anomalies, AnomalyEvent{
+				PublicKey: pk,
+				Type:      "traffic_spike",
+				Severity:  "high",
+				Message:   "检测到异常流量突发 (Z-Score > 3)",
+				Time:      time.Now(),
+			})
 		}
 
-		// 规则 2: 持续高负载 (简单的阈值判断，这里简化为检查最近几个点)
-		// 实际生产中可能需要对比该用户的带宽限额，由于不知限额，暂定 > 500MB 为高负载
+		// 规则 2: 持续高负载 (> 500MB，要求至少能验证近 3 个点皆为高负载)
 		isHighLoad := true
 		checkPoints := 3
 		if len(history) >= checkPoints {
@@ -150,25 +162,6 @@ func (ae *AnalysisEngine) DetectAnomalies() ([]AnomalyEvent, error) {
 	}
 
 	return anomalies, nil
-}
-
-func calculateStats(data []float64) (mean, stdDev float64) {
-	if len(data) == 0 {
-		return 0, 0
-	}
-	var sum float64
-	for _, v := range data {
-		sum += v
-	}
-	mean = sum / float64(len(data))
-
-	var varianceSum float64
-	for _, v := range data {
-		varianceSum += math.Pow(v-mean, 2)
-	}
-	variance := varianceSum / float64(len(data))
-	stdDev = math.Sqrt(variance)
-	return
 }
 
 // ================= 2. 客户流失预测 (Churn Prediction) =================
