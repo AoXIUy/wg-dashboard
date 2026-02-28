@@ -1,227 +1,6 @@
-<!DOCTYPE html>
-<html lang="zh" class="dark">
+<template>
+<div id="app">
 
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>WireGuard Pro Dashboard</title>
-
-    <script src="/static/js/vue.global.prod.js"></script>
-    <script src="/static/js/axios.min.js"></script>
-    <script src="/static/js/chart.umd.min.js"></script>
-    <script src="/static/js/chartjs-adapter-date-fns.bundle.min.js"></script>
-    <script src="/static/js/tailwindcss.js"></script>
-    <script src="/static/js/lucide.min.js"></script>
-    <script src="/static/js/qrcode.min.js"></script>
-    <script src="/static/js/echarts.min.js"></script>
-    <script src="/static/js/echarts-world.js"></script>
-    <script src="/static/js/vis-network.min.js"></script>
-    <script src="/static/js/advanced_analysis.js"></script>
-
-    <script>
-        tailwind.config = {
-            darkMode: 'class',
-            theme: {
-                extend: {
-                    colors: {
-                        slate: { 850: '#1e293b', 900: '#0f172a', 950: '#020617' },
-                        primary: { 500: '#3b82f6', 600: '#2563eb' }
-                    },
-                    fontFamily: { sans: ['Inter', 'system-ui', 'sans-serif'], mono: ['JetBrains Mono', 'Menlo', 'monospace'] },
-                    animation: {
-                        'pulse-slow': 'pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite',
-                        'blob': 'blob 10s infinite'
-                    },
-                    keyframes: {
-                        blob: {
-                            '0%': { transform: 'translate(0px, 0px) scale(1)' },
-                            '33%': { transform: 'translate(30px, -50px) scale(1.1)' },
-                            '66%': { transform: 'translate(-20px, 20px) scale(0.9)' },
-                            '100%': { transform: 'translate(0px, 0px) scale(1)' }
-                        }
-                    }
-                }
-            }
-        }
-    </script>
-
-    <style>
-        [v-cloak] {
-            display: none;
-        }
-
-        body {
-            transition: background-color 0.4s ease, color 0.4s ease;
-            -webkit-font-smoothing: antialiased;
-            -moz-osx-font-smoothing: grayscale;
-        }
-
-        /* 亮色模式 */
-        body {
-            background-color: #f8fafc;
-            background-image: radial-gradient(#e2e8f0 1px, transparent 1px);
-            background-size: 24px 24px;
-            color: #334155;
-            -webkit-tap-highlight-color: transparent;
-        }
-
-        /* 暗色模式 */
-        html.dark body {
-            background-color: #020617;
-            background-image: radial-gradient(#1e293b 1px, transparent 1px);
-            color: #e2e8f0;
-        }
-
-        /* 渐变遮罩 */
-        .bg-overlay {
-            position: fixed;
-            inset: 0;
-            pointer-events: none;
-            z-index: -1;
-            transition: opacity 0.5s ease;
-            background: radial-gradient(circle at 0% 0%, rgba(59, 130, 246, 0.08) 0%, transparent 50%),
-                radial-gradient(circle at 100% 100%, rgba(139, 92, 246, 0.08) 0%, transparent 50%);
-        }
-
-        html.dark .bg-overlay {
-            background: radial-gradient(circle at 0% 0%, rgba(30, 58, 138, 0.2) 0%, transparent 50%),
-                radial-gradient(circle at 100% 100%, rgba(88, 28, 135, 0.15) 0%, transparent 50%);
-        }
-
-        /* 玻璃拟态卡片 - 优化版 */
-        .glass-card {
-            transition: all 0.4s cubic-bezier(0.25, 0.8, 0.25, 1);
-            backdrop-filter: blur(20px);
-            -webkit-backdrop-filter: blur(20px);
-            background-color: rgba(255, 255, 255, 0.65);
-            border: 1px solid rgba(255, 255, 255, 0.6);
-            box-shadow:
-                0 4px 6px -1px rgba(0, 0, 0, 0.02),
-                0 2px 4px -1px rgba(0, 0, 0, 0.02),
-                inset 0 0 0 1px rgba(255, 255, 255, 0.5);
-        }
-
-        html.dark .glass-card {
-            background-color: rgba(15, 23, 42, 0.6);
-            border: 1px solid rgba(255, 255, 255, 0.08);
-            box-shadow:
-                0 4px 6px -1px rgba(0, 0, 0, 0.2),
-                0 2px 4px -1px rgba(0, 0, 0, 0.1),
-                inset 0 1px 0 0 rgba(255, 255, 255, 0.05);
-        }
-
-        .glass-card:hover {
-            transform: translateY(-2px);
-            box-shadow:
-                0 20px 25px -5px rgba(0, 0, 0, 0.05),
-                0 10px 10px -5px rgba(0, 0, 0, 0.02),
-                inset 0 0 0 1px rgba(255, 255, 255, 0.6);
-            border-color: rgba(255, 255, 255, 0.8);
-        }
-
-        html.dark .glass-card:hover {
-            border-color: rgba(255, 255, 255, 0.15);
-            box-shadow:
-                0 20px 25px -5px rgba(0, 0, 0, 0.3),
-                0 10px 10px -5px rgba(0, 0, 0, 0.15),
-                inset 0 1px 0 0 rgba(255, 255, 255, 0.1);
-        }
-
-        /* 滚动条 */
-        ::-webkit-scrollbar {
-            width: 6px;
-            height: 6px;
-        }
-
-        ::-webkit-scrollbar-track {
-            background: transparent;
-        }
-
-        ::-webkit-scrollbar-thumb {
-            background: #cbd5e1;
-            border-radius: 4px;
-        }
-
-        html.dark ::-webkit-scrollbar-thumb {
-            background: #334155;
-        }
-
-        ::-webkit-scrollbar-thumb:hover {
-            background: #94a3b8;
-        }
-
-        html.dark ::-webkit-scrollbar-thumb:hover {
-            background: #475569;
-        }
-
-        /* 动画 */
-        .list-enter-active,
-        .list-leave-active {
-            transition: all 0.3s ease;
-        }
-
-        .list-enter-from,
-        .list-leave-to {
-            opacity: 0;
-            transform: translateY(10px);
-        }
-
-        .list-move {
-            transition: transform 0.8s cubic-bezier(0.25, 0.8, 0.25, 1);
-        }
-
-        .toast-enter-active,
-        .toast-leave-active {
-            transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
-        }
-
-        .toast-enter-from,
-        .toast-leave-to {
-            opacity: 0;
-            transform: translateY(-20px) scale(0.95);
-        }
-
-        .status-pulse {
-            position: relative;
-        }
-
-        .status-pulse::after {
-            content: '';
-            position: absolute;
-            top: 50%;
-            left: 50%;
-            width: 100%;
-            height: 100%;
-            transform: translate(-50%, -50%);
-            border-radius: 50%;
-            background-color: inherit;
-            animation: pulse-ring 2s cubic-bezier(0.215, 0.61, 0.355, 1) infinite;
-            z-index: -1;
-        }
-
-        @keyframes pulse-ring {
-            0% {
-                transform: translate(-50%, -50%) scale(1);
-                opacity: 0.6;
-            }
-
-            100% {
-                transform: translate(-50%, -50%) scale(2.5);
-                opacity: 0;
-            }
-        }
-
-        .custom-scrollbar::-webkit-scrollbar {
-            height: 6px;
-            width: 6px;
-        }
-    </style>
-</head>
-
-<body class="min-h-screen font-sans antialiased selection:bg-blue-500 selection:text-white pb-10 overflow-x-hidden">
-    <div class="bg-overlay"></div>
-
-    <div id="app" v-cloak>
         <div
             class="fixed top-6 left-1/2 -translate-x-1/2 z-[110] flex flex-col gap-3 pointer-events-none w-full max-w-sm px-4">
             <transition-group name="toast">
@@ -1583,9 +1362,10 @@
             </div>
         </Transition>
     </div>
+</template>
 
-    <script>
-        const { createApp, ref, reactive, onMounted, onUnmounted, computed, nextTick, watch } = Vue;
+<script>
+const { createApp, ref, reactive, onMounted, onUnmounted, computed, nextTick, watch } = Vue;
 
         // --- Chart.js 全局配置 ---
         Chart.defaults.font.family = "'JetBrains Mono', 'Inter', system-ui, sans-serif";
@@ -2713,7 +2493,179 @@ PersistentKeepalive = 25
                 };
             }
         }).mount('#app');
-    </script>
-</body>
+    
+</script>
 
-</html>
+<style>
+
+        [v-cloak] {
+            display: none;
+        }
+
+        body {
+            transition: background-color 0.4s ease, color 0.4s ease;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }
+
+        /* 亮色模式 */
+        body {
+            background-color: #f8fafc;
+            background-image: radial-gradient(#e2e8f0 1px, transparent 1px);
+            background-size: 24px 24px;
+            color: #334155;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        /* 暗色模式 */
+        html.dark body {
+            background-color: #020617;
+            background-image: radial-gradient(#1e293b 1px, transparent 1px);
+            color: #e2e8f0;
+        }
+
+        /* 渐变遮罩 */
+        .bg-overlay {
+            position: fixed;
+            inset: 0;
+            pointer-events: none;
+            z-index: -1;
+            transition: opacity 0.5s ease;
+            background: radial-gradient(circle at 0% 0%, rgba(59, 130, 246, 0.08) 0%, transparent 50%),
+                radial-gradient(circle at 100% 100%, rgba(139, 92, 246, 0.08) 0%, transparent 50%);
+        }
+
+        html.dark .bg-overlay {
+            background: radial-gradient(circle at 0% 0%, rgba(30, 58, 138, 0.2) 0%, transparent 50%),
+                radial-gradient(circle at 100% 100%, rgba(88, 28, 135, 0.15) 0%, transparent 50%);
+        }
+
+        /* 玻璃拟态卡片 - 优化版 */
+        .glass-card {
+            transition: all 0.4s cubic-bezier(0.25, 0.8, 0.25, 1);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            background-color: rgba(255, 255, 255, 0.65);
+            border: 1px solid rgba(255, 255, 255, 0.6);
+            box-shadow:
+                0 4px 6px -1px rgba(0, 0, 0, 0.02),
+                0 2px 4px -1px rgba(0, 0, 0, 0.02),
+                inset 0 0 0 1px rgba(255, 255, 255, 0.5);
+        }
+
+        html.dark .glass-card {
+            background-color: rgba(15, 23, 42, 0.6);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            box-shadow:
+                0 4px 6px -1px rgba(0, 0, 0, 0.2),
+                0 2px 4px -1px rgba(0, 0, 0, 0.1),
+                inset 0 1px 0 0 rgba(255, 255, 255, 0.05);
+        }
+
+        .glass-card:hover {
+            transform: translateY(-2px);
+            box-shadow:
+                0 20px 25px -5px rgba(0, 0, 0, 0.05),
+                0 10px 10px -5px rgba(0, 0, 0, 0.02),
+                inset 0 0 0 1px rgba(255, 255, 255, 0.6);
+            border-color: rgba(255, 255, 255, 0.8);
+        }
+
+        html.dark .glass-card:hover {
+            border-color: rgba(255, 255, 255, 0.15);
+            box-shadow:
+                0 20px 25px -5px rgba(0, 0, 0, 0.3),
+                0 10px 10px -5px rgba(0, 0, 0, 0.15),
+                inset 0 1px 0 0 rgba(255, 255, 255, 0.1);
+        }
+
+        /* 滚动条 */
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #cbd5e1;
+            border-radius: 4px;
+        }
+
+        html.dark ::-webkit-scrollbar-thumb {
+            background: #334155;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: #94a3b8;
+        }
+
+        html.dark ::-webkit-scrollbar-thumb:hover {
+            background: #475569;
+        }
+
+        /* 动画 */
+        .list-enter-active,
+        .list-leave-active {
+            transition: all 0.3s ease;
+        }
+
+        .list-enter-from,
+        .list-leave-to {
+            opacity: 0;
+            transform: translateY(10px);
+        }
+
+        .list-move {
+            transition: transform 0.8s cubic-bezier(0.25, 0.8, 0.25, 1);
+        }
+
+        .toast-enter-active,
+        .toast-leave-active {
+            transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+
+        .toast-enter-from,
+        .toast-leave-to {
+            opacity: 0;
+            transform: translateY(-20px) scale(0.95);
+        }
+
+        .status-pulse {
+            position: relative;
+        }
+
+        .status-pulse::after {
+            content: '';
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 100%;
+            height: 100%;
+            transform: translate(-50%, -50%);
+            border-radius: 50%;
+            background-color: inherit;
+            animation: pulse-ring 2s cubic-bezier(0.215, 0.61, 0.355, 1) infinite;
+            z-index: -1;
+        }
+
+        @keyframes pulse-ring {
+            0% {
+                transform: translate(-50%, -50%) scale(1);
+                opacity: 0.6;
+            }
+
+            100% {
+                transform: translate(-50%, -50%) scale(2.5);
+                opacity: 0;
+            }
+        }
+
+        .custom-scrollbar::-webkit-scrollbar {
+            height: 6px;
+            width: 6px;
+        }
+    
+</style>
