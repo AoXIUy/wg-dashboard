@@ -985,6 +985,19 @@ func initDB() error {
 		_, _ = db.ExecContext(ctx, `ALTER TABLE peer_aliases ADD COLUMN enabled TINYINT(1) NOT NULL DEFAULT 1`)
 	}
 
+	// 创建表 3: peer_configs (存储被禁用 peer 的完整配置块，用于内核层禁用/启用)
+	schema3 := `
+	CREATE TABLE IF NOT EXISTS peer_configs (
+		public_key  CHAR(44) PRIMARY KEY,
+		conf_name   VARCHAR(64) NOT NULL,
+		peer_block  TEXT        NOT NULL,
+		saved_at    BIGINT      NOT NULL
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`
+
+	if _, err = db.ExecContext(ctx, schema3); err != nil {
+		return fmt.Errorf("创建 peer_configs 表失败: %w", err)
+	}
+
 	logger.Println("数据库初始化成功")
 	
 	// 初始化分析引擎
@@ -2051,11 +2064,14 @@ func setAlias(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
-// togglePeer 切换客户端的启用/禁用状态
+// togglePeer 切换客户端的启用/禁用状态（**内核层**）
+// 禁用：从 wg conf 移除 Peer 块 → 存入 peer_configs 表 → wg syncconf 热重载
+// 启用：从 peer_configs 读取配置块 → 追加到 conf → wg syncconf 热重载
 func togglePeer(c *gin.Context) {
 	var req struct {
 		PublicKey string `json:"public_key"`
 		Enabled   bool   `json:"enabled"`
+		ConfName  string `json:"conf_name"` // 可选，不传时使用全局 WGInterface
 	}
 
 	if err := c.BindJSON(&req); err != nil {
@@ -2064,33 +2080,191 @@ func togglePeer(c *gin.Context) {
 	}
 
 	if len(req.PublicKey) > MaxPublicKeyLength || !publicKeyRegex.MatchString(req.PublicKey) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的公钥格式"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的公鑰格式"})
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
-	defer cancel()
+	confName := req.ConfName
+	if confName == "" {
+		confName = WGInterface
+	}
+	if !isValidConfigName(confName) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "非法配置名"})
+		return
+	}
 
-	enabledVal := 0
+	configMu.Lock()
+	defer configMu.Unlock()
+
+	dbCtx, dbCancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	defer dbCancel()
+
 	if req.Enabled {
-		enabledVal = 1
-	}
+		// ============ 启用：从 DB 读取配置块并写回 conf ============
+		var peerBlock, savedConf string
+		err := db.QueryRowContext(dbCtx,
+			"SELECT peer_block, conf_name FROM peer_configs WHERE public_key = ?", req.PublicKey,
+		).Scan(&peerBlock, &savedConf)
 
-	_, err := db.ExecContext(ctx, `
-		INSERT INTO peer_aliases (public_key, alias, enabled)
-		VALUES (?, '', ?)
-		ON DUPLICATE KEY UPDATE enabled = VALUES(enabled)
-	`, req.PublicKey, enabledVal)
+		if err == sql.ErrNoRows {
+			// 如果到 peer_configs 中找不到，可能 peer 未曾被禁用，只更新 DB 标记
+			logger.Printf("[togglePeer] peer %s 在 peer_configs 中未找到配置，仅更新 DB 标记", req.PublicKey[:8])
+			_, _ = db.ExecContext(dbCtx, `INSERT INTO peer_aliases (public_key, alias, enabled) VALUES (?, '', 1) ON DUPLICATE KEY UPDATE enabled = 1`, req.PublicKey)
+			aliasCache.SetEnabled(req.PublicKey, true)
+			c.JSON(http.StatusOK, gin.H{"status": "ok", "enabled": true, "note": "no_saved_config"})
+			return
+		}
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "读取已存配置失败: " + err.Error()})
+			return
+		}
 
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "更新启用状态失败: " + err.Error()})
+		if savedConf != "" {
+			confName = savedConf
+		}
+
+		// 追加到 conf 文件
+		confPath := fmt.Sprintf("/etc/wireguard/%s.conf", confName)
+		f, err := os.OpenFile(confPath, os.O_APPEND|os.O_WRONLY, 0600)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "无法打开配置文件: " + err.Error()})
+			return
+		}
+		_, writeErr := fmt.Fprintln(f, "\n"+peerBlock)
+		f.Close()
+		if writeErr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "写入配置失败"})
+			return
+		}
+
+		// 热重载 WireGuard
+		if err := reloadWireGuard(confName); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "wg syncconf 失败: " + err.Error()})
+			return
+		}
+
+		// 清理 peer_configs 中的暂存记录
+		db.ExecContext(dbCtx, "DELETE FROM peer_configs WHERE public_key = ?", req.PublicKey)
+
+		// 更新 peer_aliases.enabled
+		db.ExecContext(dbCtx, `INSERT INTO peer_aliases (public_key, alias, enabled) VALUES (?, '', 1) ON DUPLICATE KEY UPDATE enabled = 1`, req.PublicKey)
+		aliasCache.SetEnabled(req.PublicKey, true)
+
+		logger.Printf("[togglePeer] Peer %s 已启用 (wg syncconf 热重载)", req.PublicKey[:8])
+		c.JSON(http.StatusOK, gin.H{"status": "ok", "enabled": true})
 		return
 	}
 
-	// 同步更新内存缓存，避免等待下次刷新
-	aliasCache.SetEnabled(req.PublicKey, req.Enabled)
+	// ============ 禁用：提取 peer 块 → 存 DB → 从 conf 移除 → syncconf ============
+	confPath := fmt.Sprintf("/etc/wireguard/%s.conf", confName)
 
-	c.JSON(http.StatusOK, gin.H{"status": "ok", "enabled": req.Enabled})
+	// 提取该 peer 的完整配置块
+	peerBlock, err := extractPeerBlock(confPath, req.PublicKey)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "提取 peer 配置失败: " + err.Error()})
+		return
+	}
+	if peerBlock == "" {
+		// Peer 可能已不在 conf 中（如已禁用）
+		c.JSON(http.StatusBadRequest, gin.H{"error": "未找到该 peer 的配置块，可能已禁用"})
+		return
+	}
+
+	// 把配置块存入 peer_configs 表
+	_, err = db.ExecContext(dbCtx, `
+		INSERT INTO peer_configs (public_key, conf_name, peer_block, saved_at)
+		VALUES (?, ?, ?, ?)
+		ON DUPLICATE KEY UPDATE conf_name = VALUES(conf_name), peer_block = VALUES(peer_block), saved_at = VALUES(saved_at)
+	`, req.PublicKey, confName, peerBlock, time.Now().Unix())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "存储配置失败: " + err.Error()})
+		return
+	}
+
+	// 从 conf 文件中移除 peer 块
+	if err := modifyConfigFile(confName, req.PublicKey, "remove"); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "修改配置文件失败: " + err.Error()})
+		return
+	}
+
+	// 热重载 WireGuard
+	if err := reloadWireGuard(confName); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "wg syncconf 失败: " + err.Error()})
+		return
+	}
+
+	// 更新 peer_aliases.enabled
+	db.ExecContext(dbCtx, `INSERT INTO peer_aliases (public_key, alias, enabled) VALUES (?, '', 0) ON DUPLICATE KEY UPDATE enabled = 0`, req.PublicKey)
+	aliasCache.SetEnabled(req.PublicKey, false)
+
+	logger.Printf("[togglePeer] Peer %s 已禁用 (wg syncconf 热重载)", req.PublicKey[:8])
+	c.JSON(http.StatusOK, gin.H{"status": "ok", "enabled": false})
+}
+
+// extractPeerBlock 从 wg conf 文件中提取指定 peer 的完整配置块（含 # Name: 注释）
+func extractPeerBlock(confPath, pubKey string) (string, error) {
+	content, err := os.ReadFile(confPath)
+	if err != nil {
+		return "", fmt.Errorf("读取配置文件失败: %w", err)
+	}
+
+	lines := strings.Split(string(content), "\n")
+	var blockLines []string
+	inTarget := false
+
+	for i := 0; i < len(lines); i++ {
+		line := lines[i]
+		trim := strings.TrimSpace(line)
+
+		if trim == "[Peer]" {
+			// 向后扫描最多 15 行，确认是否包含目标公鑰
+			isTarget := false
+			for j := i + 1; j < len(lines) && j < i+15; j++ {
+				if strings.Contains(lines[j], pubKey) {
+					isTarget = true
+					break
+				}
+				if strings.TrimSpace(lines[j]) == "[Peer]" || strings.TrimSpace(lines[j]) == "[Interface]" {
+					break
+				}
+			}
+			if isTarget {
+				inTarget = true
+				// 如果上一行是 # Name: 注释，一并包含
+				if i > 0 && strings.HasPrefix(strings.TrimSpace(lines[i-1]), "# Name:") {
+					blockLines = append(blockLines, lines[i-1])
+				}
+				blockLines = append(blockLines, line)
+				continue
+			}
+		}
+
+		if inTarget {
+			// 遇到下一个 section 标头或空行后紧接一个 section 标头，结束收集
+			if strings.HasPrefix(trim, "[") && trim != "[Peer]" {
+				break
+			}
+			// 连续空行且下一行是 section 标头时停止
+			if trim == "" && i+1 < len(lines) {
+				next := strings.TrimSpace(lines[i+1])
+				if strings.HasPrefix(next, "[") {
+					break
+				}
+			}
+			blockLines = append(blockLines, line)
+		}
+	}
+
+	if !inTarget {
+		return "", nil
+	}
+
+	// 去掉末尾空行
+	for len(blockLines) > 0 && strings.TrimSpace(blockLines[len(blockLines)-1]) == "" {
+		blockLines = blockLines[:len(blockLines)-1]
+	}
+
+	return strings.Join(blockLines, "\n"), nil
 }
 
 func getAnalysisHandler(c *gin.Context) {
