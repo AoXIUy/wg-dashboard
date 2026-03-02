@@ -1131,9 +1131,9 @@
                         </div>
                         <div class="flex px-5 gap-1 overflow-x-auto">
                             <button @click="diagTab='ping'"
-                                :class="['px-4 py-2 text-sm font-medium border-b-2 transition-colors whitespace-nowrap', diagTab==='ping' ? 'border-teal-500 text-teal-600 dark:text-teal-400' : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300']">Ping</button>
+                                :class="['px-4 py-2 text-sm font-medium border-b-2 transition-colors whitespace-nowrap', diagTab==='ping' ? 'border-blue-500 text-blue-600 dark:text-blue-400' : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300']">Ping</button>
                             <button @click="diagTab='traceroute'"
-                                :class="['px-4 py-2 text-sm font-medium border-b-2 transition-colors whitespace-nowrap', diagTab==='traceroute' ? 'border-teal-500 text-teal-600 dark:text-teal-400' : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300']">Traceroute</button>
+                                :class="['px-4 py-2 text-sm font-medium border-b-2 transition-colors whitespace-nowrap', diagTab==='traceroute' ? 'border-blue-500 text-blue-600 dark:text-blue-400' : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300']">Traceroute</button>
                         </div>
                     </div>
 
@@ -1145,7 +1145,7 @@
                                     <div>
                                         <label class="block text-xs text-slate-500 mb-1">选择客户端 IP</label>
                                         <select v-model="diagTarget"
-                                            class="w-full bg-slate-100 dark:bg-slate-800 border-none rounded-xl px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-teal-500">
+                                            class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500/50 transition-all">
                                             <option value="">手动输入...</option>
                                             <option v-for="p in peers" :key="p.public_key"
                                                 :value="p.endpoint ? extractEndpointIP(p.endpoint) : p.allowed_ips[0]">
@@ -1162,7 +1162,7 @@
                                     <div>
                                         <label class="block text-xs text-slate-500 mb-1">自定义 IP / 域名</label>
                                         <input v-model="diagTarget" type="text" placeholder="例如: 8.8.8.8"
-                                            class="w-full bg-slate-100 dark:bg-slate-800 border-none rounded-xl px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-teal-500"
+                                            class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500/50 transition-all"
                                             @keyup.enter="executePing">
                                     </div>
                                     <div>
@@ -1180,7 +1180,7 @@
                                         </div>
                                     </div>
                                     <button @click="executePing" :disabled="diagLoading || !diagTarget"
-                                        class="w-full mt-4 bg-teal-600 hover:bg-teal-500 text-white font-bold py-3 rounded-xl transition-all shadow-lg shadow-teal-600/20 active:scale-95 disabled:opacity-50 flex justify-center items-center gap-2">
+                                        class="w-full mt-4 bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 rounded-xl transition-all shadow-lg shadow-blue-600/20 active:scale-95 disabled:opacity-50 flex justify-center items-center gap-2">
                                         <!-- loading: 旋转圈 -->
                                         <svg v-if="diagLoading" class="w-4 h-4 animate-spin"
                                             xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
@@ -1235,19 +1235,20 @@
                                     </div>
 
                                     <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
-                                        <div class="glass-card rounded-2xl p-4 bg-white dark:bg-slate-800/50"
+                                        <div class="glass-card rounded-2xl p-4 bg-slate-50 dark:bg-slate-800/30"
                                             style="animation-delay: 50ms;">
                                             <div class="text-[10px] text-slate-400 font-bold mb-1">平均延迟 (Avg RTT)</div>
                                             <div class="text-xl font-mono font-bold text-blue-500">{{ pingResult.avg_rtt
                                                 }}<span class="text-sm ml-1 text-slate-500">ms</span></div>
                                         </div>
-                                        <div class="glass-card rounded-2xl p-4 bg-white dark:bg-slate-800/50"
+                                        <div class="glass-card rounded-2xl p-4 bg-slate-50 dark:bg-slate-800/30"
                                             style="animation-delay: 100ms;">
                                             <div class="text-[10px] text-slate-400 font-bold mb-1">最小延迟 (Min RTT)</div>
-                                            <div class="text-xl font-mono font-bold text-teal-500">{{ pingResult.min_rtt
+                                            <div class="text-xl font-mono font-bold text-emerald-500">{{
+                                                pingResult.min_rtt
                                                 }}<span class="text-sm ml-1 text-slate-500">ms</span></div>
                                         </div>
-                                        <div class="glass-card rounded-2xl p-4 bg-white dark:bg-slate-800/50"
+                                        <div class="glass-card rounded-2xl p-4 bg-slate-50 dark:bg-slate-800/30"
                                             style="animation-delay: 150ms;">
                                             <div class="text-[10px] text-slate-400 font-bold mb-1">丢包率 (Loss)</div>
                                             <div class="text-xl font-mono font-bold"
@@ -1255,7 +1256,7 @@
                                                 {{ pingResult.packet_loss }}<span
                                                     class="text-sm ml-1 text-slate-500">%</span></div>
                                         </div>
-                                        <div class="glass-card rounded-2xl p-4 bg-white dark:bg-slate-800/50"
+                                        <div class="glass-card rounded-2xl p-4 bg-slate-50 dark:bg-slate-800/30"
                                             style="animation-delay: 200ms;">
                                             <div class="text-[10px] text-slate-400 font-bold mb-1">收发包 (Rx/Tx)</div>
                                             <div class="text-xl font-mono font-bold text-slate-700 dark:text-slate-300">
@@ -1267,17 +1268,16 @@
                         </div>
 
                         <div v-show="diagTab==='traceroute'" class="flex flex-col gap-6 h-full">
-                            <div
-                                class="glass-card rounded-2xl p-4 flex gap-4 items-center shrink-0 bg-white dark:bg-slate-800/50">
+                            <div class="glass-card rounded-2xl p-4 flex gap-4 items-center shrink-0">
                                 <div class="relative flex-1 group">
                                     <i data-lucide="search"
-                                        class="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400 group-focus-within:text-teal-500 transition-colors"></i>
+                                        class="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400 group-focus-within:text-blue-500 transition-colors"></i>
                                     <input v-model="diagTarget" type="text" placeholder="输入目标 IP 或域名以追踪路由..."
-                                        class="w-full bg-slate-50 dark:bg-slate-900/80 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white rounded-xl pl-12 pr-4 py-3 focus:ring-2 focus:ring-teal-500 outline-none transition-all"
+                                        class="w-full bg-slate-50 dark:bg-slate-900/80 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white rounded-xl pl-12 pr-4 py-3 focus:ring-2 focus:ring-blue-500/50 outline-none transition-all"
                                         @keyup.enter="executeTraceroute">
                                 </div>
                                 <button @click="executeTraceroute" :disabled="diagLoading || !diagTarget"
-                                    class="px-6 py-3 bg-teal-600 hover:bg-teal-500 text-white font-bold rounded-xl transition-all shadow-lg shadow-teal-600/20 active:scale-95 disabled:opacity-50 flex items-center gap-2">
+                                    class="px-6 py-3 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-xl transition-all shadow-lg shadow-blue-600/20 active:scale-95 disabled:opacity-50 flex items-center gap-2">
                                     <!-- loading: 旋转圈 -->
                                     <svg v-if="diagLoading" class="w-4 h-4 animate-spin"
                                         xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
