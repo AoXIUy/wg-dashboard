@@ -113,6 +113,7 @@ type PeerData struct {
 	Latency         string    `json:"latency"`
 	LastSeen        time.Time
 	LastSeenTime    int64     `json:"last_seen_time"` // Unix 时间戳，用于前端拓扑图
+	Enabled         bool      `json:"enabled"`         // 客户端启用状态（默认 true）
 }
 
 type PeerState struct {
@@ -206,14 +207,16 @@ type DashboardUpdate struct {
 type AliasCache struct {
 	mu         sync.RWMutex
 	data       map[string]string
+	enabled    map[string]bool   // peer 启用状态缓存
 	lastUpdate time.Time
 	ttl        time.Duration
 }
 
 func NewAliasCache(ttl time.Duration) *AliasCache {
 	return &AliasCache{
-		data: make(map[string]string),
-		ttl:  ttl,
+		data:    make(map[string]string),
+		enabled: make(map[string]bool),
+		ttl:     ttl,
 	}
 }
 
@@ -234,21 +237,41 @@ func (ac *AliasCache) Set(pk, alias string) {
 	ac.data[pk] = alias
 }
 
+// GetEnabled 返回 peer 的启用状态，若缓存中无记录则默认返回 true（启用）
+func (ac *AliasCache) GetEnabled(pk string) bool {
+	ac.mu.RLock()
+	defer ac.mu.RUnlock()
+	if v, ok := ac.enabled[pk]; ok {
+		return v
+	}
+	return true // 默认启用
+}
+
+// SetEnabled 更新 peer 的启用状态缓存
+func (ac *AliasCache) SetEnabled(pk string, v bool) {
+	ac.mu.Lock()
+	defer ac.mu.Unlock()
+	ac.enabled[pk] = v
+}
+
 func (ac *AliasCache) Refresh(ctx context.Context) error {
-	rows, err := db.QueryContext(ctx, "SELECT public_key, alias FROM peer_aliases")
+	rows, err := db.QueryContext(ctx, "SELECT public_key, alias, enabled FROM peer_aliases")
 	if err != nil {
 		return fmt.Errorf("query aliases: %w", err)
 	}
 	defer rows.Close()
 
 	newData := make(map[string]string)
+	newEnabled := make(map[string]bool)
 	for rows.Next() {
 		var pk, alias string
-		if err := rows.Scan(&pk, &alias); err != nil {
+		var enabledVal int
+		if err := rows.Scan(&pk, &alias, &enabledVal); err != nil {
 			logger.Printf("扫描别名失败: %v", err)
 			continue
 		}
 		newData[pk] = alias
+		newEnabled[pk] = enabledVal != 0
 	}
 
 	if err := rows.Err(); err != nil {
@@ -257,6 +280,7 @@ func (ac *AliasCache) Refresh(ctx context.Context) error {
 
 	ac.mu.Lock()
 	ac.data = newData
+	ac.enabled = newEnabled
 	ac.lastUpdate = time.Now()
 	ac.mu.Unlock()
 
@@ -953,6 +977,14 @@ func initDB() error {
 		return fmt.Errorf("创建 peer_aliases 表失败: %w", err)
 	}
 
+	// 迁移: 为 peer_aliases 添加 enabled 字段（若不存在）
+	_, err = db.ExecContext(ctx, `ALTER TABLE peer_aliases ADD COLUMN IF NOT EXISTS enabled TINYINT(1) NOT NULL DEFAULT 1`)
+	if err != nil {
+		logger.Printf("迁移 peer_aliases.enabled 字段失败（可能版本不支持 IF NOT EXISTS）: %v", err)
+		// 尝试兼容旧版本 MySQL 的方式：忽略 duplicate column 错误
+		_, _ = db.ExecContext(ctx, `ALTER TABLE peer_aliases ADD COLUMN enabled TINYINT(1) NOT NULL DEFAULT 1`)
+	}
+
 	logger.Println("数据库初始化成功")
 	
 	// 初始化分析引擎
@@ -1080,6 +1112,7 @@ func collectPeersData() ([]PeerData, string, int, error) {
 			IsOnline:        isOnline,
 			Latency:         getPeerLatency(pk),
 			LastSeenTime:    lastSeenTime,
+			Enabled:         aliasCache.GetEnabled(pk),
 		})
 	}
 
@@ -1647,6 +1680,7 @@ func setupAPIRoutes(r *gin.Engine) {
 				manage.POST("/peer", addPeer)
 				manage.DELETE("/peer", removePeer)
 				manage.GET("/suggest_ip", suggestIPHandler)
+				manage.POST("/peer/toggle", togglePeer) // 启用/禁用开关
 			}
 		}
 	}
@@ -2015,6 +2049,48 @@ func setAlias(c *gin.Context) {
 	aliasCache.Set(req.PublicKey, req.Alias)
 
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+}
+
+// togglePeer 切换客户端的启用/禁用状态
+func togglePeer(c *gin.Context) {
+	var req struct {
+		PublicKey string `json:"public_key"`
+		Enabled   bool   `json:"enabled"`
+	}
+
+	if err := c.BindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "无效请求"})
+		return
+	}
+
+	if len(req.PublicKey) > MaxPublicKeyLength || !publicKeyRegex.MatchString(req.PublicKey) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的公钥格式"})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	defer cancel()
+
+	enabledVal := 0
+	if req.Enabled {
+		enabledVal = 1
+	}
+
+	_, err := db.ExecContext(ctx, `
+		INSERT INTO peer_aliases (public_key, alias, enabled)
+		VALUES (?, '', ?)
+		ON DUPLICATE KEY UPDATE enabled = VALUES(enabled)
+	`, req.PublicKey, enabledVal)
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "更新启用状态失败: " + err.Error()})
+		return
+	}
+
+	// 同步更新内存缓存，避免等待下次刷新
+	aliasCache.SetEnabled(req.PublicKey, req.Enabled)
+
+	c.JSON(http.StatusOK, gin.H{"status": "ok", "enabled": req.Enabled})
 }
 
 func getAnalysisHandler(c *gin.Context) {

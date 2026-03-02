@@ -215,6 +215,60 @@
             height: 6px;
             width: 6px;
         }
+
+        /* 禁用状态的客户端行 */
+        .peer-disabled {
+            opacity: 0.38;
+            transition: opacity 0.35s ease;
+        }
+
+        /* Toggle 开关样式 */
+        .toggle-wrap {
+            position: relative;
+            display: inline-flex;
+            align-items: center;
+            width: 34px;
+            height: 20px;
+            cursor: pointer;
+        }
+
+        .toggle-wrap input {
+            display: none;
+        }
+
+        .toggle-slider {
+            position: absolute;
+            inset: 0;
+            background: #cbd5e1;
+            border-radius: 20px;
+            transition: background 0.25s;
+        }
+
+        .toggle-slider::before {
+            content: '';
+            position: absolute;
+            width: 14px;
+            height: 14px;
+            left: 3px;
+            top: 3px;
+            background: #fff;
+            border-radius: 50%;
+            transition: transform 0.25s;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, .2);
+        }
+
+        .toggle-wrap input:checked+.toggle-slider {
+            background: #10b981;
+        }
+
+        .toggle-wrap input:checked+.toggle-slider::before {
+            transform: translateX(14px);
+        }
+
+        .toggle-wrap input:disabled+.toggle-slider {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
     </style>
 </head>
 
@@ -443,7 +497,7 @@
                         <tbody class="divide-y divide-slate-100 dark:divide-slate-800/50 text-sm">
                             <transition-group name="list">
                                 <tr v-for="p in sortedPeers" :key="p.public_key"
-                                    class="hover:bg-blue-50/50 dark:hover:bg-blue-900/10 transition-colors group">
+                                    :class="['hover:bg-blue-50/50 dark:hover:bg-blue-900/10 transition-colors group', { 'peer-disabled': p.enabled === false }]">
                                     <td class="p-5">
                                         <div class="flex items-center gap-4">
                                             <div
@@ -527,6 +581,13 @@
                                                 title="详情">
                                                 <i data-lucide="bar-chart-2" class="w-4 h-4"></i>
                                             </button>
+                                            <!-- 启用/禁用开关 -->
+                                            <label class="toggle-wrap" :title="p.enabled === false ? '点击启用' : '点击禁用'">
+                                                <input type="checkbox" :checked="p.enabled !== false"
+                                                    :disabled="!!togglingPeers[p.public_key]"
+                                                    @change="togglePeerEnabled(p)">
+                                                <span class="toggle-slider"></span>
+                                            </label>
                                             <button @click="deletePeer(p)"
                                                 class="p-2 rounded-lg text-slate-400 hover:bg-red-50 dark:hover:bg-red-900/20 hover:text-red-600 transition-all"
                                                 title="删除">
@@ -548,7 +609,7 @@
                 <div class="md:hidden p-4 space-y-4 flex-1 overflow-y-auto">
                     <transition-group name="list">
                         <div v-for="p in sortedPeers" :key="p.public_key"
-                            class="glass-card rounded-2xl p-4 active:scale-[0.99] transition-all duration-200 group">
+                            :class="['glass-card rounded-2xl p-4 active:scale-[0.99] transition-all duration-200 group', { 'peer-disabled': p.enabled === false }]">
                             <div class="flex justify-between items-start mb-4">
                                 <div class="flex items-center gap-3 overflow-hidden">
                                     <div
@@ -594,7 +655,13 @@
                             <div class="flex justify-between items-center pt-1">
                                 <span class="text-[10px] text-slate-400">{{ p.endpoint ? p.endpoint.split(':')[0] :
                                     '未连接' }}</span>
-                                <div class="flex gap-3">
+                                <div class="flex gap-3 items-center">
+                                    <!-- 移动端开关 -->
+                                    <label class="toggle-wrap" :title="p.enabled === false ? '点击启用' : '点击禁用'">
+                                        <input type="checkbox" :checked="p.enabled !== false"
+                                            :disabled="!!togglingPeers[p.public_key]" @change="togglePeerEnabled(p)">
+                                        <span class="toggle-slider"></span>
+                                    </label>
                                     <button @click="deletePeer(p)"
                                         class="p-1.5 text-slate-400 hover:text-red-500 transition-colors">
                                         <i data-lucide="trash-2" class="w-4 h-4"></i>
@@ -1725,6 +1792,9 @@
                 const peerToDelete = ref(null);
                 const deleteLoading = ref(false);
 
+                // 开关切换过渡状态（存储正在处理中的 peer公鑰，防重复点击）
+                const togglingPeers = Vue.reactive({});
+
                 // 历史日志状态
                 const accessLogs = ref([]);
                 const logsLoading = ref(false);
@@ -2620,6 +2690,34 @@ PersistentKeepalive = 25
                     showDeleteModal.value = true;
                 };
 
+                // 切换客户端启用/禁用状态
+                const togglePeerEnabled = async (peer) => {
+                    if (togglingPeers[peer.public_key]) return;
+                    togglingPeers[peer.public_key] = true;
+
+                    // 当前状态（enabled 未定义时视为 true）
+                    const wasEnabled = peer.enabled !== false;
+                    const newState = !wasEnabled;
+
+                    // 乐观更新 UI
+                    peer.enabled = newState;
+
+                    try {
+                        await axios.post('/api/manage/peer/toggle',
+                            { public_key: peer.public_key, enabled: newState },
+                            { headers: { Authorization: `Bearer ${token.value}` } }
+                        );
+                        showToast(newState ? '客户端已启用' : '客户端已禁用');
+                    } catch (e) {
+                        // 失败回滚
+                        peer.enabled = wasEnabled;
+                        showToast('切换失败: ' + (e.response?.data?.error || '未知错误'), 'error');
+                    } finally {
+                        delete togglingPeers[peer.public_key];
+                        nextTick(() => lucide.createIcons());
+                    }
+                };
+
                 const confirmDelete = async () => {
                     if (!peerToDelete.value) return;
                     deleteLoading.value = true;
@@ -2709,7 +2807,8 @@ PersistentKeepalive = 25
                     analysisTab, changeAnalysisTab,
                     selectedNode, physicsEnabled, resetTopologyZoom, togglePhysics,
                     showDiagnostics, diagTab, diagTarget, diagCount, diagLoading, pingResult, tracerouteResult, openDiagnostics, executePing, executeTraceroute,
-                    extractEndpointIP
+                    extractEndpointIP,
+                    togglingPeers, togglePeerEnabled
                 };
             }
         }).mount('#app');
