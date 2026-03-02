@@ -1129,8 +1129,52 @@ func collectPeersData() ([]PeerData, string, int, error) {
 		})
 	}
 
-	// 排序
+
+	// -------------------------------------------------------
+	// 补充被内核层禁用的 peer（存在 peer_configs 表中）
+	// 它们已从 WireGuard 内核移除，但仍需显示在仪表盘
+	// -------------------------------------------------------
+	if db != nil {
+		disCtx, disCancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer disCancel()
+
+		rows, dbErr := db.QueryContext(disCtx, "SELECT public_key, peer_block FROM peer_configs")
+		if dbErr == nil {
+			defer rows.Close()
+			// 建立已有 peer 的公钥集合，避免重复
+			existingKeys := make(map[string]bool, len(peers))
+			for _, p := range peers {
+				existingKeys[p.PublicKey] = true
+			}
+
+			for rows.Next() {
+				var dpk, dblock string
+				if err := rows.Scan(&dpk, &dblock); err != nil {
+					continue
+				}
+				if existingKeys[dpk] {
+					continue // 已在活跃列表，跳过
+				}
+				alias, _ := aliasCache.Get(dpk)
+				allowedIPs := parsePeerBlockIPs(dblock)
+				peers = append(peers, PeerData{
+					PublicKey:  dpk,
+					AllowedIPs: allowedIPs,
+					Endpoint:   "未连接",
+					Alias:      alias,
+					IsOnline:   false,
+					Enabled:    false, // 明确标记为禁用
+				})
+			}
+		}
+	}
+
+	// 排序：在线 > 离线启用 > 禁用；同级按速率和握手时间降序
 	sort.Slice(peers, func(i, j int) bool {
+		ei, ej := peers[i].Enabled, peers[j].Enabled
+		if ei != ej {
+			return ei // 启用的排前面
+		}
 		if peers[i].IsOnline != peers[j].IsOnline {
 			return peers[i].IsOnline
 		}
@@ -1144,6 +1188,28 @@ func collectPeersData() ([]PeerData, string, int, error) {
 
 	return peers, device.PublicKey.String(), device.ListenPort, nil
 }
+
+// parsePeerBlockIPs 从 peer_block 文本中解析 AllowedIPs 字段
+func parsePeerBlockIPs(block string) []string {
+	var ips []string
+	for _, line := range strings.Split(block, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(strings.ToLower(trimmed), "allowedips") {
+			parts := strings.SplitN(trimmed, "=", 2)
+			if len(parts) == 2 {
+				for _, ip := range strings.Split(parts[1], ",") {
+					if s := strings.TrimSpace(ip); s != "" {
+						ips = append(ips, s)
+					}
+				}
+			}
+			break
+		}
+	}
+	return ips
+}
+
+
 
 // ================= Ping 监控逻辑 =================
 
