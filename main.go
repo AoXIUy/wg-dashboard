@@ -1959,14 +1959,51 @@ func getPeerAccessLogs(c *gin.Context) {
 	}
 	defer rows.Close()
 
-	type epStat struct {
-		lastSeen int64
-		rx       int64
-		tx       int64
-	}
-	stats := make(map[string]*epStat)
+	var logs []AccessLog
+
+	// 会话状态
+	var sessionStart int64 = 0
+	var sessionEnd int64 = 0
+	var sessionEp string = ""
+	var sessionRx int64 = 0
+	var sessionTx int64 = 0
 
 	var prevRx, prevTx int64 = -1, -1
+
+	// 辅助函数: 封卷当前会话
+	flushSession := func() {
+		if sessionStart == 0 || sessionEp == "" {
+			return
+		}
+
+		timeStr := ""
+		if sessionStart == sessionEnd {
+			timeStr = time.Unix(sessionStart, 0).Format("2006-01-02 15:04")
+		} else {
+			startStr := time.Unix(sessionStart, 0).Format("2006-01-02 15:04")
+			endStr := time.Unix(sessionEnd, 0).Format("15:04")
+			if time.Unix(sessionStart, 0).YearDay() != time.Unix(sessionEnd, 0).YearDay() {
+				endStr = time.Unix(sessionEnd, 0).Format("01-02 15:04")
+			}
+			timeStr = fmt.Sprintf("%s ~ %s", startStr, endStr)
+		}
+
+		logs = append(logs, AccessLog{
+			Timestamp: timeStr,
+			Endpoint:  sessionEp,
+			RxTotal:   sessionRx,
+			TxTotal:   sessionTx,
+		})
+	}
+
+	cleanIP := func(ep string) string {
+		host, _, err := net.SplitHostPort(ep)
+		if err == nil {
+			return host
+		}
+		// 如果报错，可能本身就是裸 IP 或者异常格式
+		return strings.Trim(ep, "[]")
+	}
 
 	for rows.Next() {
 		var ts int64
@@ -1976,12 +2013,14 @@ func getPeerAccessLogs(c *gin.Context) {
 			continue
 		}
 
+		cleanEp := cleanIP(ep)
+
 		if prevRx == -1 {
 			prevRx = rx
 			prevTx = tx
-			if _, ok := stats[ep]; !ok {
-				stats[ep] = &epStat{lastSeen: ts, rx: 0, tx: 0}
-			}
+			sessionStart = ts
+			sessionEnd = ts
+			sessionEp = cleanEp
 			continue
 		}
 
@@ -1995,36 +2034,35 @@ func getPeerAccessLogs(c *gin.Context) {
 			deltaTx = tx
 		}
 
-		if _, ok := stats[ep]; !ok {
-			stats[ep] = &epStat{}
+		timeGap := ts - sessionEnd
+		if cleanEp != sessionEp || timeGap > 7200 { // 2小时断层
+			flushSession()
+
+			sessionStart = ts
+			sessionEnd = ts
+			sessionEp = cleanEp
+			sessionRx = deltaRx
+			sessionTx = deltaTx
+		} else {
+			sessionEnd = ts
+			sessionRx += deltaRx
+			sessionTx += deltaTx
 		}
-		stats[ep].lastSeen = ts
-		stats[ep].rx += deltaRx
-		stats[ep].tx += deltaTx
 
 		prevRx = rx
 		prevTx = tx
 	}
+
+	flushSession()
 
 	if err := rows.Err(); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "数据读取错误: " + err.Error()})
 		return
 	}
 
-	var logs []AccessLog
-	for ep, s := range stats {
-		tStr := time.Unix(s.lastSeen, 0).Format("2006-01-02 15:04")
-		logs = append(logs, AccessLog{
-			Timestamp: tStr,
-			Endpoint:  ep,
-			RxTotal:   s.rx,
-			TxTotal:   s.tx,
-		})
+	for i, j := 0, len(logs)-1; i < j; i, j = i+1, j-1 {
+		logs[i], logs[j] = logs[j], logs[i]
 	}
-
-	sort.Slice(logs, func(i, j int) bool {
-		return logs[i].Timestamp > logs[j].Timestamp
-	})
 
 	if len(logs) > 100 {
 		logs = logs[:100]
