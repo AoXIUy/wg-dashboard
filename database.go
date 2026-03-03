@@ -204,7 +204,7 @@ func flushMySQL(batch []ProcessedLog) {
 	backupToFile(batch)
 }
 
-// attemptFlushMySQL 使用事务批量插入，返回首个错误
+// attemptFlushMySQL 使用事务批量插入，部分行失败时备份失败条目
 func attemptFlushMySQL(batch []ProcessedLog) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -225,7 +225,8 @@ func attemptFlushMySQL(batch []ProcessedLog) error {
 	}
 	defer stmt.Close()
 
-	failed := 0
+	// 正确性修复：收集失败条目，事务提交后备份，避免静默丢失
+var failedEntries []ProcessedLog
 	for _, logEntry := range batch {
 		if _, err := stmt.ExecContext(ctx,
 			logEntry.Timestamp,
@@ -237,7 +238,7 @@ func attemptFlushMySQL(batch []ProcessedLog) error {
 			logEntry.TxRate,
 			logEntry.IsOnline,
 		); err != nil {
-			failed++
+			failedEntries = append(failedEntries, logEntry)
 			logger.Printf("插入记录失败 [%s]: %v", logEntry.PublicKey, err)
 		}
 	}
@@ -246,8 +247,11 @@ func attemptFlushMySQL(batch []ProcessedLog) error {
 		return fmt.Errorf("提交事务失败: %w", err)
 	}
 
-	if failed > 0 {
-		logger.Printf("批量插入完成，成功 %d/%d 条", len(batch)-failed, len(batch))
+	// 将本次失败的条目备份到文件，确保数据不丢失
+	if len(failedEntries) > 0 {
+		logger.Printf("批量插入完成，成功 %d/%d 条，失败 %d 条已备份",
+			len(batch)-len(failedEntries), len(batch), len(failedEntries))
+		backupToFile(failedEntries)
 	}
 
 	return nil

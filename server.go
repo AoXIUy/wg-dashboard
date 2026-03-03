@@ -153,6 +153,10 @@ func startBackgroundServices(ctx context.Context, wg *sync.WaitGroup, rawChan ch
 	wg.Add(1)
 	go func() { defer wg.Done(); startCacheRefresher(ctx) }()
 
+	// 定期清理地理信息内存缓存（防止内存泄漏）
+	wg.Add(1)
+	go func() { defer wg.Done(); startGeoCacheCleaner(ctx) }()
+
 	// 定期预计算分析报告（仅 Redis 启用时）
 	if redisEnabled {
 		wg.Add(1)
@@ -305,6 +309,10 @@ func checkAuthHandler(c *gin.Context) {
 	}
 
 	token, err := jwt.ParseWithClaims(tokenString, &JwtClaims{}, func(token *jwt.Token) (interface{}, error) {
+		// 安全修复：与 authMiddleware 保持一致，明确校验签名方法，防止 alg:none 攻击
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, errors.New("无效的签名方法")
+		}
 		return []byte(JWTSecret), nil
 	})
 
@@ -422,7 +430,7 @@ func setupAPIRoutes(r *gin.Engine) {
 	{
 		api.POST("/login", loginHandler)
 		api.GET("/check_auth", checkAuthHandler)
-		api.GET("/metrics", metricsHandler)
+		// 注意：/metrics 已移入鉴权路由组，避免匿名访问内部指标
 
 		authorized := api.Group("/")
 		authorized.Use(authMiddleware())
@@ -439,6 +447,7 @@ func setupAPIRoutes(r *gin.Engine) {
 			authorized.GET("/analysis", getAdvancedAnalysis)
 			authorized.GET("/ping/execute", pingHandler)
 			authorized.GET("/traceroute/execute", tracerouteHandler)
+			authorized.GET("/metrics", metricsHandler)
 
 			manage := authorized.Group("/manage")
 			{
@@ -458,20 +467,46 @@ func setupAPIRoutes(r *gin.Engine) {
 func parseFlags() {
 	flag.StringVar(&WGInterface, "iface", "wg0", "WireGuard 接口名称")
 	flag.StringVar(&ServerPort, "port", ":18080", "Web 监听端口")
-	flag.StringVar(&MySQLDSN, "mysql", "wg_user:cloud123@tcp(127.0.0.1:3306)/wg_monitor?charset=utf8mb4&parseTime=True&loc=Local", "MySQL 连接字符串")
+	// 安全修复：移除含明文密码的默认 DSN，强制用户显式提供
+	flag.StringVar(&MySQLDSN, "mysql", "", "MySQL 连接字符串 (必填，格式: user:pass@tcp(host:port)/dbname?charset=utf8mb4&parseTime=True&loc=Local)")
 	flag.StringVar(&RedisAddr, "redis", "127.0.0.1:6379", "Redis 地址")
 	flag.IntVar(&Retention, "days", 30, "数据保留天数")
-	flag.StringVar(&AdminPassword, "password", "admin123", "仪表盘访问密码")
-	flag.StringVar(&JWTSecret, "secret", "change_this_secret_in_prod", "JWT 签名密钥")
+	flag.StringVar(&AdminPassword, "password", "", "仪表盘访问密码 (必填，或设置 WG_ADMIN_PASSWORD 环境变量)")
+	flag.StringVar(&JWTSecret, "secret", "", "JWT 签名密钥 (必填，或设置 WG_JWT_SECRET 环境变量)")
 	flag.StringVar(&GeoCityPath, "geo-city", "./GeoLite2-City.mmdb", "GeoLite2 City 数据库路径")
 	flag.StringVar(&GeoASNPath, "geo-asn", "./GeoLite2-ASN.mmdb", "GeoLite2 ASN 数据库路径")
 	flag.Parse()
 
-	// 环境变量优先级高于 flag 默认值
+	// 环境变量优先级高于 flag
 	if v := os.Getenv("WG_ADMIN_PASSWORD"); v != "" {
 		AdminPassword = v
 	}
 	if v := os.Getenv("WG_JWT_SECRET"); v != "" {
 		JWTSecret = v
+	}
+	if v := os.Getenv("WG_MYSQL_DSN"); v != "" {
+		MySQLDSN = v
+	}
+
+	// 安全校验：拒绝以空凭据或已知弱密钥启动
+	validateSecurityConfig()
+}
+
+// validateSecurityConfig 校验安全关键配置，不满足时直接终止程序
+func validateSecurityConfig() {
+	if AdminPassword == "" {
+		logger.Fatal("[安全] 密码未设置，请通过 -password 参数或 WG_ADMIN_PASSWORD 环境变量配置")
+	}
+	if len(AdminPassword) < 8 {
+		logger.Fatal("[安全] 密码长度不足 8 位，请设置更强的密码")
+	}
+	if JWTSecret == "" {
+		logger.Fatal("[安全] JWT 密钥未设置，请通过 -secret 参数或 WG_JWT_SECRET 环境变量配置")
+	}
+	if len(JWTSecret) < 16 {
+		logger.Fatal("[安全] JWT 密钥长度不足 16 位，请使用更长的随机字串")
+	}
+	if MySQLDSN == "" {
+		logger.Fatal("[安全] MySQL DSN 未设置，请通过 -mysql 参数或 WG_MYSQL_DSN 环境变量配置")
 	}
 }

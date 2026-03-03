@@ -27,6 +27,28 @@ var (
 	geoCacheMu sync.RWMutex
 )
 
+// startGeoCacheCleaner 内存泄漏修复：每小时清理 geoCache 中超过 24h TTL 的过期条目。
+// 防止 Peer 更换 IP 后旧条目无限积累导致内存增长。
+func startGeoCacheCleaner(ctx context.Context) {
+	ticker := time.NewTicker(1 * time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			now := time.Now()
+			geoCacheMu.Lock()
+			for ip, entry := range geoCache {
+				if now.Sub(entry.Timestamp) >= 24*time.Hour {
+					delete(geoCache, ip)
+				}
+			}
+			geoCacheMu.Unlock()
+		}
+	}
+}
+
 // ================= 地图与高级分析接口 =================
 
 func getMapData(c *gin.Context) {

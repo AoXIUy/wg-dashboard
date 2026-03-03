@@ -126,6 +126,7 @@ func (ae *AnalysisEngine) DetectAnomalies() ([]AnomalyEvent, error) {
 		}
 
 		currentTraffic := history[len(history)-1]
+		const checkPoints = 3
 
 		// 规则 1: 突发流量 (Z-Score > 3) 且 绝对值 > 50MB (避免小流量误报)
 		zScore := (currentTraffic - baseline.MeanMB) / baseline.StdDevMB
@@ -137,12 +138,10 @@ func (ae *AnalysisEngine) DetectAnomalies() ([]AnomalyEvent, error) {
 				Message:   "检测到异常流量突发 (Z-Score > 3)",
 				Time:      time.Now(),
 			})
-		}
-
-		// 规则 2: 持续高负载 (> 500MB，要求至少能验证近 3 个点皆为高负载)
-		isHighLoad := true
-		checkPoints := 3
-		if len(history) >= checkPoints {
+		} else if len(history) >= checkPoints {
+			// 规则 2：持续高负载 (> 500MB，要求至少能验证近 3 个点皆为高负载)
+			// 改为 else if，防止与规则 1 对同一 Peer 同时触发双重告警
+			isHighLoad := true
 			for i := 0; i < checkPoints; i++ {
 				if history[len(history)-1-i] < 500 {
 					isHighLoad = false

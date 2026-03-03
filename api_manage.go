@@ -109,11 +109,14 @@ func addPeer(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 
-	db.ExecContext(ctx, `
+	// 正确性修复：记录别名写库错误（非致命，Peer 仍可正常连接）
+	if _, dbErr := db.ExecContext(ctx, `
 		INSERT INTO peer_aliases (public_key, alias) 
 		VALUES (?, ?) 
 		ON DUPLICATE KEY UPDATE alias = VALUES(alias)
-	`, pubKey.String(), req.Name)
+	`, pubKey.String(), req.Name); dbErr != nil {
+		logger.Printf("[addPeer] 写入别名失败 (公钥 %s): %v", pubKey.String()[:8], dbErr)
+	}
 
 	aliasCache.Set(pubKey.String(), req.Name)
 
@@ -256,8 +259,12 @@ func togglePeer(c *gin.Context) {
 			return
 		}
 
-		db.ExecContext(dbCtx, "DELETE FROM peer_configs WHERE public_key = ?", req.PublicKey)
-		db.ExecContext(dbCtx, `INSERT INTO peer_aliases (public_key, alias, enabled) VALUES (?, '', 1) ON DUPLICATE KEY UPDATE enabled = 1`, req.PublicKey)
+		if _, dbErr := db.ExecContext(dbCtx, "DELETE FROM peer_configs WHERE public_key = ?", req.PublicKey); dbErr != nil {
+			logger.Printf("[togglePeer] 清理 peer_configs 失败 (公钥 %s): %v", req.PublicKey[:8], dbErr)
+		}
+		if _, dbErr := db.ExecContext(dbCtx, `INSERT INTO peer_aliases (public_key, alias, enabled) VALUES (?, '', 1) ON DUPLICATE KEY UPDATE enabled = 1`, req.PublicKey); dbErr != nil {
+			logger.Printf("[togglePeer] 更新 peer_aliases.enabled=1 失败 (公钥 %s): %v", req.PublicKey[:8], dbErr)
+		}
 		aliasCache.SetEnabled(req.PublicKey, true)
 
 		logger.Printf("[togglePeer] Peer %s 已启用 (wg syncconf 热重载)", req.PublicKey[:8])
@@ -298,7 +305,9 @@ func togglePeer(c *gin.Context) {
 		return
 	}
 
-	db.ExecContext(dbCtx, `INSERT INTO peer_aliases (public_key, alias, enabled) VALUES (?, '', 0) ON DUPLICATE KEY UPDATE enabled = 0`, req.PublicKey)
+	if _, dbErr := db.ExecContext(dbCtx, `INSERT INTO peer_aliases (public_key, alias, enabled) VALUES (?, '', 0) ON DUPLICATE KEY UPDATE enabled = 0`, req.PublicKey); dbErr != nil {
+		logger.Printf("[togglePeer] 更新 peer_aliases.enabled=0 失败 (公钥 %s): %v", req.PublicKey[:8], dbErr)
+	}
 	aliasCache.SetEnabled(req.PublicKey, false)
 
 	logger.Printf("[togglePeer] Peer %s 已禁用 (wg syncconf 热重载)", req.PublicKey[:8])
@@ -533,5 +542,15 @@ func modifyConfigFile(confName, targetPubKey, action string) error {
 	}
 
 	output := strings.Join(newLines, "\n")
-	return os.WriteFile(path, []byte(output), 0600)
+
+	// 原子性修复：先写临时文件，再 Rename，防止崩溃导致配置损坏
+	tmpPath := path + ".tmp"
+	if err := os.WriteFile(tmpPath, []byte(output), 0600); err != nil {
+		return fmt.Errorf("写入临时配置文件失败: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath) // 清理临时文件
+		return fmt.Errorf("原子替换配置文件失败: %w", err)
+	}
+	return nil
 }

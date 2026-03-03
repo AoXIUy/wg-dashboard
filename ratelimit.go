@@ -48,7 +48,7 @@ func getClientIP(c *gin.Context) string {
 	return c.ClientIP()
 }
 
-// isRateLimited 检查该 IP 是否已被封禁或达到频率上限
+// isRateLimited 检查该 IP 是否已被封禁或达到频率上限。
 // 若被限制返回 true；对于合法请求，此函数不做任何记录
 func (r *rateLimiter) isRateLimited(ip string) bool {
 	r.mu.Lock()
@@ -74,6 +74,12 @@ func (r *rateLimiter) isRateLimited(ip string) bool {
 		}
 	}
 	attempt.failures = valid
+
+	// 内存泄漏修复：封禁已到期且失败记录为空时删除 map 条目
+	if len(valid) == 0 {
+		delete(r.attempts, ip)
+		return false
+	}
 
 	return len(attempt.failures) >= rateLimitMaxFails
 }
@@ -105,18 +111,5 @@ func (r *rateLimiter) recordSuccess(ip string) {
 	defer r.mu.Unlock()
 	delete(r.attempts, ip)
 }
-
-// rateLimitMiddleware 用于 /api/login 路由的频率限制中间件
-func rateLimitMiddleware() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		ip := getClientIP(c)
-		if loginRateLimiter.isRateLimited(ip) {
-			c.JSON(http.StatusTooManyRequests, gin.H{
-				"error": "登录尝试过于频繁，请稍后再试",
-			})
-			c.Abort()
-			return
-		}
-		c.Next()
-	}
-}
+// 注意： rateLimitMiddleware 已删除（死代码）。
+// 登录频率限制由 loginHandler 直接调用 loginRateLimiter.isRateLimited() 实现，无需中间件。

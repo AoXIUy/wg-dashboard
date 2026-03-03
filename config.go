@@ -61,4 +61,9 @@ var (
 	latencyCache   *LatencyCache
 	metrics        *Metrics
 	analysisEngine *AnalysisEngine
+
+	// 性能优化：缓存最近一次采集周期处理后的 PeerData，供 broadcastUpdate 和 startPinger 复用，
+	// 避免各自重复创建 wgctrl.Client 并再次向内核发起查询
+	cachedPeers   []PeerData
+	cachedPeersMu sync.RWMutex
 )

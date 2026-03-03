@@ -228,6 +228,13 @@ func tracerouteHandler(c *gin.Context) {
 // reMsToken 匹配独立的 ms 单位 token （如 "1.23ms" 或数字后面紧跟的 "ms"）
 var reMsValue = regexp.MustCompile(`^(\d+\.?\d*)ms$`)
 
+// 以下包级预编译正则供 parseWindowsTracert 使用，避免循环内重复编译（性能修复）
+var (
+	reWindowsLineStart = regexp.MustCompile(`^\d+`)
+	reWindowsIP        = regexp.MustCompile(`\d+\.\d+\.\d+\.\d+|[0-9a-fA-F:]+`)
+	reWindowsMs        = regexp.MustCompile(`([<]*\d+)\s*ms`)
+)
+
 func parseLinuxTraceroute(res *TracerouteResponse, out string) {
 	lines := strings.Split(out, "\n")
 	expectedDistance := 1
@@ -311,7 +318,8 @@ func parseWindowsTracert(res *TracerouteResponse, out string) {
 
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
-		if line == "" || !regexp.MustCompile(`^\d+`).MatchString(line) {
+		// 性能修复：使用包级预编译的正则，避免每行重复创建编译器
+		if line == "" || !reWindowsLineStart.MatchString(line) {
 			continue
 		}
 
@@ -336,16 +344,14 @@ func parseWindowsTracert(res *TracerouteResponse, out string) {
 		hop := TracerouteHop{Distance: distance}
 		var times []float64
 
-		ipRegex := regexp.MustCompile(`\d+\.\d+\.\d+\.\d+|[0-9a-fA-F:]+`)
-		ips := ipRegex.FindAllString(line, -1)
+		ips := reWindowsIP.FindAllString(line, -1)
 		if len(ips) > 0 {
 			hop.Address = ips[len(ips)-1]
 		} else {
 			hop.Address = "*"
 		}
 
-		msRegex := regexp.MustCompile(`([<]*\d+)\s*ms`)
-		msMatches := msRegex.FindAllStringSubmatch(line, -1)
+		msMatches := reWindowsMs.FindAllStringSubmatch(line, -1)
 		for _, m := range msMatches {
 			val := strings.TrimPrefix(m[1], "<")
 			if t, err := strconv.ParseFloat(val, 64); err == nil {

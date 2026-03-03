@@ -44,8 +44,8 @@ type PeerData struct {
 	TxRate          float64   `json:"tx_rate"`
 	IsOnline        bool      `json:"is_online"`
 	Latency         string    `json:"latency"`
-	LastSeen        time.Time
-	LastSeenTime    int64 `json:"last_seen_time"` // Unix 时间戳，用于前端拓扑图
+	LastSeen        time.Time `json:"-"`             // 内部字段，不导出；前端使用 LastSeenTime
+	LastSeenTime    int64     `json:"last_seen_time"` // Unix 时间戳，用于前端拓扑图
 	Enabled         bool  `json:"enabled"`        // 客户端启用状态（默认 true）
 }
 

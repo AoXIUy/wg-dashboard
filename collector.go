@@ -310,6 +310,9 @@ func processSnapshot(ctx context.Context, snap RawSnapshot, stateMap map[string]
 		pipe = rdb.Pipeline()
 	}
 
+	// 性能优化：同步构建 PeerData，俩面存入全局缓存，防止 broadcastUpdate / pinger 重复向 WG 内核发起查询
+	builtPeers := make([]PeerData, 0, len(snap.Peers))
+
 	for _, p := range snap.Peers {
 		pk := p.PublicKey.String()
 		state, exists := stateMap[pk]
@@ -374,7 +377,43 @@ func processSnapshot(ctx context.Context, snap RawSnapshot, stateMap map[string]
 		if redisEnabled && pipe != nil {
 			updateRedisState(pipe, ctx, pk, rxRate, txRate, isOnline, epStr, snap.Timestamp.Unix())
 		}
+
+		// 构建本循环的 PeerData——利用已有数据，无需再次权豆内核
+		var ips []string
+		for _, ip := range p.AllowedIPs {
+			ips = append(ips, ip.String())
+		}
+		ep := "未连接"
+		if p.Endpoint != nil {
+			ep = p.Endpoint.String()
+		}
+		alias, _ := aliasCache.Get(pk)
+		var latestHandshake int64
+		if !p.LastHandshakeTime.IsZero() {
+			latestHandshake = p.LastHandshakeTime.Unix()
+		}
+		builtPeers = append(builtPeers, PeerData{
+			PublicKey:       pk,
+			AllowedIPs:      ips,
+			Endpoint:        ep,
+			LastHandshake:   p.LastHandshakeTime,
+			LatestHandshake: latestHandshake,
+			ReceiveBytes:    p.ReceiveBytes,
+			TransmitBytes:   p.TransmitBytes,
+			Alias:           alias,
+			RxRate:          rxRate,
+			TxRate:          txRate,
+			IsOnline:        isOnline,
+			Latency:         getPeerLatency(pk),
+			LastSeenTime:    snap.Timestamp.Unix(),
+			Enabled:         aliasCache.GetEnabled(pk),
+		})
 	}
+
+	// 将构建好的 PeerData 写入全局缓存，供 broadcastUpdate 和 startPinger 直接读取
+	cachedPeersMu.Lock()
+	cachedPeers = builtPeers
+	cachedPeersMu.Unlock()
 
 	// 执行 Redis Pipeline 并广播更新
 	if redisEnabled && pipe != nil {
@@ -405,13 +444,17 @@ func updateRedisState(pipe redis.Pipeliner, ctx context.Context, pk string, rxRa
 	pipe.Expire(ctx, key, 5*time.Minute)
 }
 
-// broadcastUpdate 收集当前全量数据并推送给所有 SSE 客户端（或 Redis Pub/Sub）
+// broadcastUpdate 从全局缓存读取最近一次处理结果并推送给所有 SSE 客户端（或 Redis Pub/Sub）
+// 性能优化：不再调用 collectPeersData，消除每个采集周期的第二次 WireGuard 内核查询
 func broadcastUpdate(ctx context.Context) {
-	peers, _, _, err := collectPeersData()
-	if err != nil {
-		logger.Printf("收集 Peer 数据失败: %v", err)
+	cachedPeersMu.RLock()
+	if len(cachedPeers) == 0 {
+		cachedPeersMu.RUnlock()
 		return
 	}
+	peers := make([]PeerData, len(cachedPeers))
+	copy(peers, cachedPeers)
+	cachedPeersMu.RUnlock()
 
 	update := DashboardUpdate{
 		Peers:     peers,
@@ -457,11 +500,15 @@ func startPinger(ctx context.Context) {
 				continue
 			}
 
-			peers, _, _, err := collectPeersData()
-			if err != nil {
-				logger.Printf("获取 Peer 列表失败: %v", err)
+			// 性能优化：从全局缓存读取 Peer 列表，不再重复查询 WireGuard 内核
+			cachedPeersMu.RLock()
+			if len(cachedPeers) == 0 {
+				cachedPeersMu.RUnlock()
 				continue
 			}
+			peers := make([]PeerData, len(cachedPeers))
+			copy(peers, cachedPeers)
+			cachedPeersMu.RUnlock()
 
 			var wg sync.WaitGroup
 			semaphore := make(chan struct{}, 10) // 最多 10 个并发 Ping
@@ -498,7 +545,8 @@ func startPinger(ctx context.Context) {
 	}
 }
 
-// pingHost 对指定 IP 执行单次 Ping，返回延迟毫秒数（失败返回 0）
+// pingHost 对指定 IP 执行单次 Ping。
+// 性能修复：解析 ping 输出获取真实 RTT，而非依赖进程总耗时（含进程启动开销）
 func pingHost(ip string) int64 {
 	var cmd *exec.Cmd
 
@@ -508,11 +556,30 @@ func pingHost(ip string) int64 {
 		cmd = exec.Command("ping", "-c", "1", "-W", "1", ip)
 	}
 
-	start := time.Now()
-	if err := cmd.Run(); err != nil {
+	out, err := cmd.CombinedOutput()
+	if err != nil {
 		return 0
 	}
-	return time.Since(start).Milliseconds()
+
+	outStr := string(out)
+
+	if runtime.GOOS == "windows" {
+		// 解析 Windows ping 输出获取平均 RTT
+		r := &PingResponse{}
+		parseWindowsPing(r, outStr)
+		if r.PacketsReceived > 0 {
+			return int64(r.AvgRtt)
+		}
+	} else {
+		// 解析 Linux ping 输出获取平均 RTT
+		r := &PingResponse{}
+		parseLinuxPing(r, outStr)
+		if r.PacketsReceived > 0 {
+			return int64(r.AvgRtt)
+		}
+	}
+
+	return 0
 }
 
 // getPeerLatency 供其他模块调用，获取 Peer 当前延迟字符串
