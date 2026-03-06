@@ -44,10 +44,39 @@ func startAnalysisPrecompute(ctx context.Context) {
 func precomputeAnalysisReport(ctx context.Context) {
 	logger.Println("开始预计算分析报告...")
 
-	report, err := analysisEngine.GetAdvancedReport()
+	// 【死锁修复】不再调用 GetAdvancedReport()，因为它会先读 Redis 缓存。
+	// 若缓存命中旧数据，将导致"读旧缓存 → 写旧缓存"的自我强化死循环，缓存永远无法更新。
+	// 解决方案：直接调用各分析子方法，完全绕过缓存层，确保每次都从数据库计算最新数据。
+	anomalies, err := analysisEngine.DetectAnomalies()
 	if err != nil {
-		logger.Printf("预计算分析报告失败: %v", err)
-		return
+		logger.Printf("预计算异常检测失败: %v", err)
+		anomalies = []AnomalyEvent{}
+	}
+
+	churns, err := analysisEngine.PredictChurn()
+	if err != nil {
+		logger.Printf("预计算流失预测失败: %v", err)
+		churns = []ChurnRisk{}
+	}
+
+	optTime, heatmap, hourlyProfile, err := analysisEngine.RefinedAnalysis()
+	if err != nil {
+		logger.Printf("预计算时段分析失败: %v", err)
+	}
+
+	peerStats, err := analysisEngine.AnalyzePeers()
+	if err != nil {
+		logger.Printf("预计算 Peer 分析失败: %v", err)
+		peerStats = []PeerStats{}
+	}
+
+	report := AdvancedReport{
+		Anomalies:     anomalies,
+		ChurnRisks:    churns,
+		OptimalTime:   optTime,
+		GlobalHeat:    heatmap,
+		HourlyProfile: hourlyProfile,
+		Peers:         peerStats,
 	}
 
 	// 写入缓存（2 分钟 TTL，比定时任务间隔多 1 分钟，避免空窗期）
@@ -56,13 +85,12 @@ func precomputeAnalysisReport(ctx context.Context) {
 		if err := rdb.Set(ctx, cacheKey, jsonBytes, 2*time.Minute).Err(); err != nil {
 			logger.Printf("写入预计算缓存失败: %v", err)
 		} else {
-			logger.Printf("预计算分析报告完成，缓存已更新")
-			// BUG-2 修复：缓存更新后通过 SSE 通知所有前端客户端主动刷新分析数据，
-			// 彻底打通"分析通路"与"实时通路"，无需前端盲目定时轮询。
+			logger.Printf("预计算分析报告完成，缓存已更新（peers=%d, anomalies=%d）",
+				len(peerStats), len(anomalies))
+			// 通知前端刷新分析数据
 			select {
 			case sseBroker.Message <- `{"type":"analysis_updated"}`:
 			default:
-				// 通道满时跳过通知，不阻塞预计算流程
 			}
 		}
 	} else {
