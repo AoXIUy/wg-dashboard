@@ -1986,7 +1986,25 @@
                     es.value.onmessage = (event) => {
                         try {
                             const data = JSON.parse(event.data);
-                            // 更新核心数据
+
+                            // analysis_updated 事件：后端预计算完成，通知前端刷新分析数据
+                            if (data.type === 'analysis_updated') {
+                                if (showAnalysis.value) {
+                                    // 面板已打开：静默后台拉取，不影响用户当前浏览
+                                    axios.get('/api/analysis', { headers: { Authorization: `Bearer ${token.value}` } })
+                                        .then(res => {
+                                            analysisData.value = res.data;
+                                            nextTick(() => renderAnalysisCharts());
+                                        })
+                                        .catch(() => { });
+                                } else if (analysisData.value) {
+                                    // 面板关闭但有缓存数据：标记为过期，下次打开时重新拉取
+                                    analysisData.value._stale = true;
+                                }
+                                return;
+                            }
+
+                            // 标准实时推送：更新 peers + system
                             peers.value = data.peers || [];
                             sysInfo.value = data.system || { cpu_percent: 0, mem_percent: 0 };
 
@@ -2258,6 +2276,19 @@
 
                 const openAnalysis = async () => {
                     showAnalysis.value = true;
+
+                    // 若已有数据且未被标记为过期（_stale 由 SSE analysis_updated 通知设置）
+                    // 则直接复用已有数据，避免重复请求
+                    if (analysisData.value && !analysisData.value._stale) {
+                        await nextTick();
+                        renderAnalysisCharts();
+                        lucide.createIcons();
+                        if (analysisTab.value === 'map') initMap();
+                        if (analysisTab.value === 'topology') initTopology();
+                        return;
+                    }
+
+                    // 数据不存在或已过期，重新拉取
                     analysisLoading.value = true;
                     analysisData.value = null;
                     try {
