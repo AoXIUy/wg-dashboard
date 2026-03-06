@@ -57,6 +57,13 @@ func precomputeAnalysisReport(ctx context.Context) {
 			logger.Printf("写入预计算缓存失败: %v", err)
 		} else {
 			logger.Printf("预计算分析报告完成，缓存已更新")
+			// BUG-2 修复：缓存更新后通过 SSE 通知所有前端客户端主动刷新分析数据，
+			// 彻底打通"分析通路"与"实时通路"，无需前端盲目定时轮询。
+			select {
+			case sseBroker.Message <- `{"type":"analysis_updated"}`:
+			default:
+				// 通道满时跳过通知，不阻塞预计算流程
+			}
 		}
 	} else {
 		logger.Printf("序列化分析报告失败: %v", err)

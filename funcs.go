@@ -81,7 +81,7 @@ func getMapData(c *gin.Context) {
 	for _, p := range peers {
 		// 即使没有 Endpoint (未连接)，也应该在拓扑图中显示，作为离线节点
 		// 地图模式下如果没有坐标则无法显示，但拓扑图应该显示所有 Peers
-		
+
 		// 尝试获取 IP 用于定位
 		var ip net.IP
 		host := ""
@@ -99,7 +99,7 @@ func getMapData(c *gin.Context) {
 
 		if ip != nil && !ip.IsPrivate() && !ip.IsLoopback() {
 			ipStr := ip.String()
-			
+
 			// 1. 查内存缓存
 			geoCacheMu.RLock()
 			entry, found := geoCache[ipStr]
@@ -126,7 +126,7 @@ func getMapData(c *gin.Context) {
 							country = redisEntry.Country
 							source = "cache_redis"
 							redisHit = true
-							
+
 							// 同步到内存缓存
 							geoCacheMu.Lock()
 							geoCache[ipStr] = redisEntry
@@ -143,7 +143,7 @@ func getMapData(c *gin.Context) {
 						country = info.CountryCode
 						city = info.City
 						source = info.Source // provider 返回的 source ("local", "external", "local_fallback")
-						
+
 						// 写入缓存（仅当获取到有效数据时）
 						if lat != 0 || lon != 0 || city != "" {
 							newEntry := GeoCacheEntry{
@@ -153,12 +153,12 @@ func getMapData(c *gin.Context) {
 								Country:   country,
 								Timestamp: time.Now(),
 							}
-							
+
 							// 写入内存缓存
 							geoCacheMu.Lock()
 							geoCache[ipStr] = newEntry
 							geoCacheMu.Unlock()
-							
+
 							// 写入 Redis 缓存
 							if redisEnabled && rdb != nil {
 								if jsonBytes, err := json.Marshal(newEntry); err == nil {
@@ -193,11 +193,41 @@ func getMapData(c *gin.Context) {
 	c.JSON(http.StatusOK, data)
 }
 
+// ================= 内存级分析报告缓存（无 Redis 时的兜底保护）=================
+
+var (
+	memAnalysisCache   AdvancedReport
+	memAnalysisCacheAt time.Time
+	memAnalysisMu      sync.RWMutex
+)
+
 func getAdvancedAnalysis(c *gin.Context) {
+	// BUG-3 修复：无 Redis 场景下，原先每次 HTTP 请求都会串行执行 4 个大查询。
+	// 增加进程内存缓存（60 秒 TTL），确保高频请求时不会压垮 MySQL。
+	if !redisEnabled {
+		memAnalysisMu.RLock()
+		if !memAnalysisCacheAt.IsZero() && time.Since(memAnalysisCacheAt) < 60*time.Second {
+			report := memAnalysisCache
+			memAnalysisMu.RUnlock()
+			c.JSON(http.StatusOK, report)
+			return
+		}
+		memAnalysisMu.RUnlock()
+	}
+
 	report, err := analysisEngine.GetAdvancedReport()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+
+	// 无 Redis 时写入内存缓存
+	if !redisEnabled {
+		memAnalysisMu.Lock()
+		memAnalysisCache = report
+		memAnalysisCacheAt = time.Now()
+		memAnalysisMu.Unlock()
+	}
+
 	c.JSON(http.StatusOK, report)
 }

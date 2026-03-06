@@ -477,6 +477,9 @@ func broadcastUpdate(ctx context.Context) {
 		select {
 		case sseBroker.Message <- string(jsonData):
 		default:
+			// BUG-6 修复：记录丢帧警告，便于运维发现"数据卡住"问题；
+			// 原因通常是 SSE 客户端消费慢导致通道（容量100）被打满。
+			logger.Println("警告: SSE Message 通道已满，丢弃本次广播帧")
 		}
 	}
 }

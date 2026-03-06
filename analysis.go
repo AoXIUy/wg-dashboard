@@ -23,7 +23,7 @@ func NewAnalysisEngine(db *sql.DB) *AnalysisEngine {
 
 type AnomalyEvent struct {
 	PublicKey string    `json:"public_key"`
-	Type      string    `json:"type"` // "traffic_spike", "network_abuse"
+	Type      string    `json:"type"`     // "traffic_spike", "network_abuse"
 	Severity  string    `json:"severity"` // "medium", "high"
 	Message   string    `json:"message"`
 	Time      time.Time `json:"time"`
@@ -95,7 +95,7 @@ func (ae *AnalysisEngine) DetectAnomalies() ([]AnomalyEvent, error) {
 		FROM traffic_history 
 		WHERE timestamp > ? 
 		ORDER BY timestamp ASC`
-	
+
 	fifteenMinsAgo := time.Now().Add(-15 * time.Minute).Unix()
 	rows, err := ae.db.Query(query, fifteenMinsAgo)
 	if err != nil {
@@ -206,7 +206,7 @@ func (ae *AnalysisEngine) PredictChurn() ([]ChurnRisk, error) {
 
 	for pk := range allPeers {
 		dailyData := peerDaily[pk]
-		
+
 		// 1. 计算最后一次活跃距离现在的天数
 		var lastActiveTs int64 = 0
 		for ts := range dailyData {
@@ -214,7 +214,7 @@ func (ae *AnalysisEngine) PredictChurn() ([]ChurnRisk, error) {
 				lastActiveTs = ts
 			}
 		}
-		
+
 		daysOffline := 0
 		if lastActiveTs > 0 {
 			daysOffline = int((now - lastActiveTs) / 86400)
@@ -306,8 +306,6 @@ func linearRegression(x, y []float64) float64 {
 
 // ================= 3. 最佳连接时间 & 全局热力图 (Optimal Time & Heatmap) =================
 
-
-
 func (ae *AnalysisEngine) RefinedAnalysis() (OptimalTime, [][]float64, []HourlyTraffic, error) {
 	// 使用 rx_rate 和 tx_rate，更直接反映带宽压力
 	query := `
@@ -332,7 +330,7 @@ func (ae *AnalysisEngine) RefinedAnalysis() (OptimalTime, [][]float64, []HourlyT
 	for i := range heatmap {
 		heatmap[i] = make([]float64, 24)
 	}
-	
+
 	// Hourly Profile (24h) - Accumulators
 	hourlyRxSum := make([]float64, 24)
 	hourlyTxSum := make([]float64, 24)
@@ -344,12 +342,12 @@ func (ae *AnalysisEngine) RefinedAnalysis() (OptimalTime, [][]float64, []HourlyT
 		if err := rows.Scan(&h, &d, &rx, &tx); err != nil {
 			continue
 		}
-		
+
 		dayIdx := d - 1
 		if dayIdx >= 0 && dayIdx < 7 && h >= 0 && h < 24 {
 			totalRate := rx + tx
 			heatmap[dayIdx][h] = totalRate
-			
+
 			hourlyRxSum[h] += rx
 			hourlyTxSum[h] += tx
 			hourlyCounts[h]++
@@ -380,7 +378,7 @@ func (ae *AnalysisEngine) RefinedAnalysis() (OptimalTime, [][]float64, []HourlyT
 	// Find the 3-hour window with lowest sum
 	minTraffic := math.MaxFloat64
 	bestHour := 0
-	
+
 	for i := 0; i < 24; i++ {
 		sum := 0.0
 		for j := 0; j < 3; j++ {
@@ -406,6 +404,11 @@ func (ae *AnalysisEngine) RefinedAnalysis() (OptimalTime, [][]float64, []HourlyT
 // ================= 4. Peer 统计分析 (Peer Statistics) =================
 
 func (ae *AnalysisEngine) AnalyzePeers() ([]PeerStats, error) {
+	// 确保别名缓存为最新，避免后续 N+1 查询
+	if aliasCache.NeedsRefresh() {
+		aliasCache.Refresh(context.Background())
+	}
+
 	// 查询过去 7 天的流量统计
 	// [修改] 使用 rx_rate/tx_rate 积分估算流量，而非直接均值或 sum bytes
 	query := `
@@ -466,7 +469,6 @@ func (ae *AnalysisEngine) AnalyzePeers() ([]PeerStats, error) {
 				aliasCache.Set(pk, alias)
 			}
 		}
-
 
 		peerStats = append(peerStats, PeerStats{
 			PublicKey:     pk,
@@ -559,12 +561,8 @@ func (ae *AnalysisEngine) GetAdvancedReport() (AdvancedReport, error) {
 		Peers:         peerStats,
 	}
 
-	// 3. 写入 Redis 缓存（1 分钟 TTL）
-	if redisEnabled && rdb != nil {
-		if jsonBytes, err := json.Marshal(report); err == nil {
-			rdb.Set(context.Background(), "wg:cache:advanced_report", jsonBytes, 1*time.Minute)
-		}
-	}
+	// 缓存写入统一由 precompute.go 中的 precomputeAnalysisReport 负责定期刷新（2 分钟 TTL）。
+	// 此处不主动写入，避免与预计算任务双写竞争导致 TTL 时效混乱。
 
 	return report, nil
 }
