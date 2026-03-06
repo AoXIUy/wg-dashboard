@@ -8,6 +8,11 @@ import (
 
 // ================= 分析报告预计算定时任务 =================
 
+// 全局缓存最新的重负载分析结果，供短周期生成最终报告时合并使用
+var (
+	latestHeavyReport *AdvancedReport
+)
+
 func startAnalysisPrecompute(ctx context.Context) {
 	if !redisEnabled || analysisEngine == nil {
 		logger.Println("分析预计算器已跳过（Redis 未启用或分析引擎未初始化）")
@@ -17,13 +22,18 @@ func startAnalysisPrecompute(ctx context.Context) {
 	logger.Println("分析预计算器已启动")
 	defer logger.Println("分析预计算器已停止")
 
-	// 启动时立即执行一次预计算
+	// 启动时立即执行一次长短周期的重计算
+	precomputeHeavyTasks(ctx)
 	precomputeAnalysisReport(ctx)
 	precomputePeerBaselines(ctx) // 立即计算一次基线
 
-	// 分析报告 Ticker (每分钟)
-	tickerReport := time.NewTicker(1 * time.Minute)
-	defer tickerReport.Stop()
+	// 分析报告 Ticker (轻量级/最近15分钟) - 每分钟
+	tickerLight := time.NewTicker(1 * time.Minute)
+	defer tickerLight.Stop()
+
+	// 深度分析 Ticker (重负载/过去7天-30天) - 每小时
+	tickerHeavy := time.NewTicker(1 * time.Hour)
+	defer tickerHeavy.Stop()
 
 	// 基线计算 Ticker (每小时)
 	tickerBaseline := time.NewTicker(1 * time.Hour)
@@ -33,60 +43,84 @@ func startAnalysisPrecompute(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-tickerReport.C:
+		case <-tickerLight.C:
 			precomputeAnalysisReport(ctx)
+		case <-tickerHeavy.C:
+			precomputeHeavyTasks(ctx)
 		case <-tickerBaseline.C:
 			precomputePeerBaselines(ctx)
 		}
 	}
 }
 
-func precomputeAnalysisReport(ctx context.Context) {
-	logger.Println("开始预计算分析报告...")
-
-	// 【死锁修复】不再调用 GetAdvancedReport()，因为它会先读 Redis 缓存。
-	// 若缓存命中旧数据，将导致"读旧缓存 → 写旧缓存"的自我强化死循环，缓存永远无法更新。
-	// 解决方案：直接调用各分析子方法，完全绕过缓存层，确保每次都从数据库计算最新数据。
-	anomalies, err := analysisEngine.DetectAnomalies()
-	if err != nil {
-		logger.Printf("预计算异常检测失败: %v", err)
-		anomalies = []AnomalyEvent{}
-	}
+// precomputeHeavyTasks 计算耗时长、数据跨度大的分析指标（如30天流失、7天热力图等），并将结果存入内存以便拼装
+func precomputeHeavyTasks(ctx context.Context) {
+	logger.Println("开始执行重负载深度分析计算...")
 
 	churns, err := analysisEngine.PredictChurn()
 	if err != nil {
-		logger.Printf("预计算流失预测失败: %v", err)
+		logger.Printf("深度分析 - 预计算流失预测失败: %v", err)
 		churns = []ChurnRisk{}
 	}
 
 	optTime, heatmap, hourlyProfile, err := analysisEngine.RefinedAnalysis()
 	if err != nil {
-		logger.Printf("预计算时段分析失败: %v", err)
+		logger.Printf("深度分析 - 预计算时段分析失败: %v", err)
 	}
 
 	peerStats, err := analysisEngine.AnalyzePeers()
 	if err != nil {
-		logger.Printf("预计算 Peer 分析失败: %v", err)
+		logger.Printf("深度分析 - 预计算 Peer 分析失败: %v", err)
 		peerStats = []PeerStats{}
 	}
 
-	report := AdvancedReport{
-		Anomalies:     anomalies,
+	latestHeavyReport = &AdvancedReport{
 		ChurnRisks:    churns,
 		OptimalTime:   optTime,
 		GlobalHeat:    heatmap,
 		HourlyProfile: hourlyProfile,
 		Peers:         peerStats,
 	}
+	logger.Println("重负载深度分析计算完成并更新内存副本")
+}
+
+// precomputeAnalysisReport 每分钟执行轻量级实时计算（如 15分钟异常检测），并将其与内存中的深度分析报告拼装后写入缓存
+func precomputeAnalysisReport(ctx context.Context) {
+	logger.Println("开始生成综合分析报告(轻量级计算+重负载合并)...")
+
+	// 轻量级：近 15 分钟异常检测
+	anomalies, err := analysisEngine.DetectAnomalies()
+	if err != nil {
+		logger.Printf("预计算异常检测失败: %v", err)
+		anomalies = []AnomalyEvent{}
+	}
+
+	// 初始化一个空壳子，并把最新鲜的 anomalies 塞进去
+	report := AdvancedReport{
+		Anomalies: anomalies,
+	}
+
+	// 如果有深度分析结果的备份，直接挂载进去
+	if latestHeavyReport != nil {
+		report.ChurnRisks = latestHeavyReport.ChurnRisks
+		report.OptimalTime = latestHeavyReport.OptimalTime
+		report.GlobalHeat = latestHeavyReport.GlobalHeat
+		report.HourlyProfile = latestHeavyReport.HourlyProfile
+		report.Peers = latestHeavyReport.Peers
+	} else {
+		logger.Println("警告：深度分析结果尚未就绪，综合报告将只有异常检测告警")
+		report.ChurnRisks = []ChurnRisk{}
+		report.Peers = []PeerStats{}
+	}
 
 	// 写入缓存（2 分钟 TTL，比定时任务间隔多 1 分钟，避免空窗期）
 	if jsonBytes, err := json.Marshal(report); err == nil {
 		cacheKey := "wg:cache:advanced_report"
 		if err := rdb.Set(ctx, cacheKey, jsonBytes, 2*time.Minute).Err(); err != nil {
-			logger.Printf("写入预计算缓存失败: %v", err)
+			logger.Printf("写入综合分析报告缓存失败: %v", err)
 		} else {
-			logger.Printf("预计算分析报告完成，缓存已更新（peers=%d, anomalies=%d）",
-				len(peerStats), len(anomalies))
+			logger.Printf("综合分析报告完成并回写缓存（peers=%d, anomalies=%d）",
+				len(report.Peers), len(anomalies))
 			// 通知前端刷新分析数据
 			select {
 			case sseBroker.Message <- `{"type":"analysis_updated"}`:
