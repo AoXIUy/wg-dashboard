@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"math"
 	"sort"
+	"strconv"
 	"time"
 )
 
@@ -448,7 +449,19 @@ func (ae *AnalysisEngine) AnalyzePeers() ([]PeerStats, error) {
 		totalRx := int64(dimRxRate * WindowSec * 1000000 / 8)
 		totalTx := int64(dimTxRate * WindowSec * 1000000 / 8)
 
-		// 2. 健康分计算
+		// 【实时融合】从 Redis 获取该 Peer 的实时 last_seen，取两者最大值：
+		// MySQL MAX(timestamp) 受 WriteInterval(6s)/BufferSize(1000) 影响可能有延迟；
+		// Redis wg:peer:state:{pk} 在每个采集周期（2s）都会更新，更为实时。
+		if redisEnabled && rdb != nil {
+			key := "wg:peer:state:" + pk
+			if val, err := rdb.HGet(context.Background(), key, "last_seen").Result(); err == nil {
+				if redisSeen, err := strconv.ParseInt(val, 10, 64); err == nil && redisSeen > lastSeen {
+					lastSeen = redisSeen
+				}
+			}
+		}
+
+		// 2. 健康分计算（使用融合后的实时 lastSeen）
 		healthScore := calculateHealthScore(onlineRecords, totalRecords, lastSeen)
 
 		// 3. 在线率
