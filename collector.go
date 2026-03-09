@@ -410,6 +410,57 @@ func processSnapshot(ctx context.Context, snap RawSnapshot, stateMap map[string]
 		})
 	}
 
+	// 补充被内核层禁用的 peer（存在 peer_configs 表但已从 WireGuard 移除），与 collectPeersData 保持一致
+	if db != nil {
+		disCtx, disCancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer disCancel()
+
+		disRows, dbErr := db.QueryContext(disCtx, "SELECT public_key, peer_block FROM peer_configs")
+		if dbErr == nil {
+			defer disRows.Close()
+			existingKeys := make(map[string]bool, len(builtPeers))
+			for _, p := range builtPeers {
+				existingKeys[p.PublicKey] = true
+			}
+			for disRows.Next() {
+				var dpk, dblock string
+				if err := disRows.Scan(&dpk, &dblock); err != nil {
+					continue
+				}
+				if existingKeys[dpk] {
+					continue
+				}
+				alias, _ := aliasCache.Get(dpk)
+				allowedIPs := parsePeerBlockIPs(dblock)
+				builtPeers = append(builtPeers, PeerData{
+					PublicKey:  dpk,
+					AllowedIPs: allowedIPs,
+					Endpoint:   "未连接",
+					Alias:      alias,
+					IsOnline:   false,
+					Enabled:    false, // 明确标记为禁用
+				})
+			}
+		}
+	}
+
+	// 排序：启用 > 禁用；在线 > 离线；速率降序；握手时间降序
+	sort.Slice(builtPeers, func(i, j int) bool {
+		ei, ej := builtPeers[i].Enabled, builtPeers[j].Enabled
+		if ei != ej {
+			return ei
+		}
+		if builtPeers[i].IsOnline != builtPeers[j].IsOnline {
+			return builtPeers[i].IsOnline
+		}
+		rateI := builtPeers[i].RxRate + builtPeers[i].TxRate
+		rateJ := builtPeers[j].RxRate + builtPeers[j].TxRate
+		if rateI != rateJ {
+			return rateI > rateJ
+		}
+		return builtPeers[i].LastHandshake.After(builtPeers[j].LastHandshake)
+	})
+
 	// 将构建好的 PeerData 写入全局缓存，供 broadcastUpdate 和 startPinger 直接读取
 	cachedPeersMu.Lock()
 	cachedPeers = builtPeers
