@@ -16,10 +16,10 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/go-redis/redis/v8"
-	_ "github.com/go-sql-driver/mysql"
 	"github.com/golang-jwt/jwt/v5"
 	"gopkg.in/natefinch/lumberjack.v2"
+
+	_ "modernc.org/sqlite"
 
 	"wg-dashboard/pkg/ipapi"
 )
@@ -30,9 +30,9 @@ import (
 func initLogger() {
 	logFile := &lumberjack.Logger{
 		Filename:   "./app.log",
-		MaxSize:    100,  // 单文件最大 100MB
-		MaxBackups: 7,    // 保留 7 个备份
-		MaxAge:     30,   // 保留 30 天
+		MaxSize:    50,   // RK3399 优化：从 100MB 降到 50MB
+		MaxBackups: 3,    // 从 7 个降到 3 个
+		MaxAge:     14,   // 从 30 天降到 14 天
 		Compress:   true, // 压缩旧日志
 		LocalTime:  true, // 使用本地时间
 	}
@@ -82,35 +82,15 @@ func initGeoIP() {
 	}
 }
 
-// initRedis 连接 Redis，失败时将 redisEnabled 设为 false
-func initRedis() {
-	rdb = redis.NewClient(&redis.Options{
-		Addr:         RedisAddr,
-		DialTimeout:  2 * time.Second,
-		ReadTimeout:  1 * time.Second,
-		WriteTimeout: 1 * time.Second,
-		PoolSize:     10,
-		MinIdleConns: 2,
-	})
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	if err := rdb.Ping(ctx).Err(); err != nil {
-		logger.Printf("Redis 连接失败: %v (将禁用缓存/队列功能)", err)
-		redisEnabled = false
-	} else {
-		logger.Println("Redis 已连接")
-		redisEnabled = true
-	}
-}
-
 // initComponents 初始化所有内存组件（缓存、SSE Broker 等）
 func initComponents() {
 	aliasCache = NewAliasCache(CacheTTL)
 	trafficBuffer = NewTrafficBuffer(BufferMaxSize)
 	latencyCache = NewLatencyCache()
 	metrics = &Metrics{}
+
+	// 初始化内存状态缓存（替代 Redis）
+	initStateCache()
 
 	sseBroker = &SSEBroker{
 		Clients:       make(map[chan string]bool),
@@ -144,11 +124,6 @@ func startBackgroundServices(ctx context.Context, wg *sync.WaitGroup, rawChan ch
 	wg.Add(1)
 	go func() { defer wg.Done(); startSSEBroker(ctx) }()
 
-	if redisEnabled {
-		wg.Add(1)
-		go func() { defer wg.Done(); startRedisBroadcastListener(ctx) }()
-	}
-
 	// 定期刷新别名缓存
 	wg.Add(1)
 	go func() { defer wg.Done(); startCacheRefresher(ctx) }()
@@ -157,11 +132,21 @@ func startBackgroundServices(ctx context.Context, wg *sync.WaitGroup, rawChan ch
 	wg.Add(1)
 	go func() { defer wg.Done(); startGeoCacheCleaner(ctx) }()
 
-	// 定期预计算分析报告（仅 Redis 启用时）
-	if redisEnabled {
-		wg.Add(1)
-		go func() { defer wg.Done(); startAnalysisPrecompute(ctx) }()
-	}
+	// 预计算分析报告（始终启用，使用内存缓存替代 Redis）
+	wg.Add(1)
+	go func() { defer wg.Done(); startAnalysisPrecompute(ctx) }()
+
+	// RK3399 优化：数据降采样引擎
+	wg.Add(1)
+	go func() { defer wg.Done(); startDownsampler(ctx) }()
+
+	// RK3399 优化：SQLite 维护任务
+	wg.Add(1)
+	go func() { defer wg.Done(); startSQLiteMaintenance(ctx) }()
+
+	// RK3399 优化：系统指标异步采集器
+	wg.Add(1)
+	go func() { defer wg.Done(); startSysInfoCollector(ctx) }()
 }
 
 // startCacheRefresher 定期刷新别名缓存
@@ -309,7 +294,6 @@ func checkAuthHandler(c *gin.Context) {
 	}
 
 	token, err := jwt.ParseWithClaims(tokenString, &JwtClaims{}, func(token *jwt.Token) (interface{}, error) {
-		// 安全修复：与 authMiddleware 保持一致，明确校验签名方法，防止 alg:none 攻击
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, errors.New("无效的签名方法")
 		}
@@ -332,13 +316,9 @@ func metricsHandler(c *gin.Context) {
 # TYPE wg_processed_total counter
 wg_processed_total %d
 
-# HELP wg_failed_writes_total Failed MySQL writes
+# HELP wg_failed_writes_total Failed SQLite writes
 # TYPE wg_failed_writes_total counter
 wg_failed_writes_total %d
-
-# HELP wg_redis_errors_total Redis operation errors
-# TYPE wg_redis_errors_total counter
-wg_redis_errors_total %d
 
 # HELP wg_cache_hits_total Cache hits
 # TYPE wg_cache_hits_total counter
@@ -354,7 +334,6 @@ wg_buffer_size %d
 `,
 		stats["processed"],
 		stats["failed_writes"],
-		stats["redis_errors"],
 		stats["cache_hits"],
 		stats["cache_misses"],
 		trafficBuffer.Size(),
@@ -397,7 +376,7 @@ func startHTTPServer() *http.Server {
 		logger.Printf("==============================================")
 		logger.Printf("WireGuard Monitor & Manager 启动成功")
 		logger.Printf("接口: %s | 端口: %s", WGInterface, ServerPort)
-		logger.Printf("数据库: MySQL | Redis: %v", redisEnabled)
+		logger.Printf("数据库: SQLite (WAL 模式) | 路径: %s", DBPath)
 		logger.Printf("==============================================")
 
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -430,7 +409,6 @@ func setupAPIRoutes(r *gin.Engine) {
 	{
 		api.POST("/login", loginHandler)
 		api.GET("/check_auth", checkAuthHandler)
-		// 注意：/metrics 已移入鉴权路由组，避免匿名访问内部指标
 
 		authorized := api.Group("/")
 		authorized.Use(authMiddleware())
@@ -467,9 +445,7 @@ func setupAPIRoutes(r *gin.Engine) {
 func parseFlags() {
 	flag.StringVar(&WGInterface, "iface", "wg0", "WireGuard 接口名称")
 	flag.StringVar(&ServerPort, "port", ":18080", "Web 监听端口")
-	// 安全修复：移除含明文密码的默认 DSN，强制用户显式提供
-	flag.StringVar(&MySQLDSN, "mysql", "", "MySQL 连接字符串 (必填，格式: user:pass@tcp(host:port)/dbname?charset=utf8mb4&parseTime=True&loc=Local)")
-	flag.StringVar(&RedisAddr, "redis", "127.0.0.1:6379", "Redis 地址")
+	flag.StringVar(&DBPath, "db", "./wg-dashboard.db", "SQLite 数据库路径")
 	flag.IntVar(&Retention, "days", 30, "数据保留天数")
 	flag.StringVar(&AdminPassword, "password", "", "仪表盘访问密码 (必填，或设置 WG_ADMIN_PASSWORD 环境变量)")
 	flag.StringVar(&JWTSecret, "secret", "", "JWT 签名密钥 (必填，或设置 WG_JWT_SECRET 环境变量)")
@@ -484,11 +460,11 @@ func parseFlags() {
 	if v := os.Getenv("WG_JWT_SECRET"); v != "" {
 		JWTSecret = v
 	}
-	if v := os.Getenv("WG_MYSQL_DSN"); v != "" {
-		MySQLDSN = v
+	if v := os.Getenv("WG_DB_PATH"); v != "" {
+		DBPath = v
 	}
 
-	// 安全校验：拒绝以空凭据或已知弱密钥启动
+	// 安全校验
 	validateSecurityConfig()
 }
 
@@ -505,8 +481,5 @@ func validateSecurityConfig() {
 	}
 	if len(JWTSecret) < 16 {
 		logger.Fatal("[安全] JWT 密钥长度不足 16 位，请使用更长的随机字串")
-	}
-	if MySQLDSN == "" {
-		logger.Fatal("[安全] MySQL DSN 未设置，请通过 -mysql 参数或 WG_MYSQL_DSN 环境变量配置")
 	}
 }

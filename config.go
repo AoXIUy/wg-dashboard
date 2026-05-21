@@ -7,22 +7,17 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-redis/redis/v8"
 	"wg-dashboard/pkg/ipapi"
 )
 
 // ================= 常量定义 =================
 const (
-	CollectInterval     = 2 * time.Second
-	WriteInterval       = 6 * time.Second
+	CollectInterval     = 5 * time.Second  // RK3399 优化：从 2s 提升到 5s，减少 60% 写入
+	WriteInterval       = 30 * time.Second // RK3399 优化：从 6s 提升到 30s，合并更多写入减少 fsync
 	BatchSize           = 100
 	MaxAliasLength      = 100
 	MaxPublicKeyLength  = 200
 	OnlineThreshold     = 3 * time.Minute
-	DBMaxOpenConns      = 50
-	DBMaxIdleConns      = 10
-	DBConnMaxLifetime   = 10 * time.Minute
-	DBConnMaxIdleTime   = 5 * time.Minute
 	CacheTTL            = 5 * time.Minute
 	ShutdownTimeout     = 30 * time.Second
 	BitsPerByte         = 8.0
@@ -30,15 +25,14 @@ const (
 	TokenExpireDuration = 24 * time.Hour
 	SSEBroadcastLimit   = 100 * time.Millisecond
 	MaxRetries          = 3
-	BufferMaxSize       = 1000
+	BufferMaxSize       = 500 // RK3399 优化：从 1000 降到 500，配合更长的写入间隔
 )
 
 // ================= 命令行配置变量 =================
 var (
 	WGInterface   string
 	ServerPort    string
-	MySQLDSN      string
-	RedisAddr     string
+	DBPath        string // SQLite 数据库路径（替代 MySQLDSN）
 	Retention     int
 	AdminPassword string
 	JWTSecret     string
@@ -49,13 +43,11 @@ var (
 // ================= 全局变量 =================
 var (
 	db             *sql.DB
-	rdb            *redis.Client
 	configMu       sync.Mutex
 	publicKeyRegex = regexp.MustCompile(`^[A-Za-z0-9+/]{43}=$`)
 	logger         *log.Logger
 	ipProvider     ipapi.Provider
 	sseBroker      *SSEBroker
-	redisEnabled   bool
 	aliasCache     *AliasCache
 	trafficBuffer  *TrafficBuffer
 	latencyCache   *LatencyCache

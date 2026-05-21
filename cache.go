@@ -62,7 +62,7 @@ func (ac *AliasCache) SetEnabled(pk string, v bool) {
 	ac.enabled[pk] = v
 }
 
-// Refresh 从数据库全量刷新别名与启用状态缓存
+// Refresh 从数据库全量刷新别名与启用状态缓存（SQLite 兼容）
 func (ac *AliasCache) Refresh(ctx context.Context) error {
 	rows, err := db.QueryContext(ctx, "SELECT public_key, alias, enabled FROM peer_aliases")
 	if err != nil {
@@ -154,11 +154,10 @@ func (tb *TrafficBuffer) Size() int {
 
 // ================= Metrics：原子计数监控指标 =================
 
-// Metrics 使用原子操作记录关键运行指标，可暴露给 Prometheus
+// Metrics 使用原子操作记录关键运行指标
 type Metrics struct {
 	ProcessedCount int64
 	FailedWrites   int64
-	RedisErrors    int64
 	CacheHits      int64
 	CacheMisses    int64
 }
@@ -169,10 +168,6 @@ func (m *Metrics) IncProcessed() {
 
 func (m *Metrics) IncFailedWrites() {
 	atomic.AddInt64(&m.FailedWrites, 1)
-}
-
-func (m *Metrics) IncRedisErrors() {
-	atomic.AddInt64(&m.RedisErrors, 1)
 }
 
 func (m *Metrics) IncCacheHits() {
@@ -188,7 +183,6 @@ func (m *Metrics) GetStats() map[string]int64 {
 	return map[string]int64{
 		"processed":     atomic.LoadInt64(&m.ProcessedCount),
 		"failed_writes": atomic.LoadInt64(&m.FailedWrites),
-		"redis_errors":  atomic.LoadInt64(&m.RedisErrors),
 		"cache_hits":    atomic.LoadInt64(&m.CacheHits),
 		"cache_misses":  atomic.LoadInt64(&m.CacheMisses),
 	}

@@ -113,7 +113,7 @@ func addPeer(c *gin.Context) {
 	if _, dbErr := db.ExecContext(ctx, `
 		INSERT INTO peer_aliases (public_key, alias) 
 		VALUES (?, ?) 
-		ON DUPLICATE KEY UPDATE alias = VALUES(alias)
+		ON CONFLICT(public_key) DO UPDATE SET alias = excluded.alias
 	`, pubKey.String(), req.Name); dbErr != nil {
 		logger.Printf("[addPeer] 写入别名失败 (公钥 %s): %v", pubKey.String()[:8], dbErr)
 	}
@@ -227,7 +227,7 @@ func togglePeer(c *gin.Context) {
 
 		if err == sql.ErrNoRows {
 			logger.Printf("[togglePeer] peer %s 在 peer_configs 中未找到配置，仅更新 DB 标记", req.PublicKey[:8])
-			_, _ = db.ExecContext(dbCtx, `INSERT INTO peer_aliases (public_key, alias, enabled) VALUES (?, '', 1) ON DUPLICATE KEY UPDATE enabled = 1`, req.PublicKey)
+			_, _ = db.ExecContext(dbCtx, `INSERT INTO peer_aliases (public_key, alias, enabled) VALUES (?, '', 1) ON CONFLICT(public_key) DO UPDATE SET enabled = 1`, req.PublicKey)
 			aliasCache.SetEnabled(req.PublicKey, true)
 			c.JSON(http.StatusOK, gin.H{"status": "ok", "enabled": true, "note": "no_saved_config"})
 			return
@@ -262,7 +262,7 @@ func togglePeer(c *gin.Context) {
 		if _, dbErr := db.ExecContext(dbCtx, "DELETE FROM peer_configs WHERE public_key = ?", req.PublicKey); dbErr != nil {
 			logger.Printf("[togglePeer] 清理 peer_configs 失败 (公钥 %s): %v", req.PublicKey[:8], dbErr)
 		}
-		if _, dbErr := db.ExecContext(dbCtx, `INSERT INTO peer_aliases (public_key, alias, enabled) VALUES (?, '', 1) ON DUPLICATE KEY UPDATE enabled = 1`, req.PublicKey); dbErr != nil {
+		if _, dbErr := db.ExecContext(dbCtx, `INSERT INTO peer_aliases (public_key, alias, enabled) VALUES (?, '', 1) ON CONFLICT(public_key) DO UPDATE SET enabled = 1`, req.PublicKey); dbErr != nil {
 			logger.Printf("[togglePeer] 更新 peer_aliases.enabled=1 失败 (公钥 %s): %v", req.PublicKey[:8], dbErr)
 		}
 		aliasCache.SetEnabled(req.PublicKey, true)
@@ -288,7 +288,7 @@ func togglePeer(c *gin.Context) {
 	_, err = db.ExecContext(dbCtx, `
 		INSERT INTO peer_configs (public_key, conf_name, peer_block, saved_at)
 		VALUES (?, ?, ?, ?)
-		ON DUPLICATE KEY UPDATE conf_name = VALUES(conf_name), peer_block = VALUES(peer_block), saved_at = VALUES(saved_at)
+		ON CONFLICT(public_key) DO UPDATE SET conf_name = excluded.conf_name, peer_block = excluded.peer_block, saved_at = excluded.saved_at
 	`, req.PublicKey, confName, peerBlock, time.Now().Unix())
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "存储配置失败: " + err.Error()})
@@ -305,7 +305,7 @@ func togglePeer(c *gin.Context) {
 		return
 	}
 
-	if _, dbErr := db.ExecContext(dbCtx, `INSERT INTO peer_aliases (public_key, alias, enabled) VALUES (?, '', 0) ON DUPLICATE KEY UPDATE enabled = 0`, req.PublicKey); dbErr != nil {
+	if _, dbErr := db.ExecContext(dbCtx, `INSERT INTO peer_aliases (public_key, alias, enabled) VALUES (?, '', 0) ON CONFLICT(public_key) DO UPDATE SET enabled = 0`, req.PublicKey); dbErr != nil {
 		logger.Printf("[togglePeer] 更新 peer_aliases.enabled=0 失败 (公钥 %s): %v", req.PublicKey[:8], dbErr)
 	}
 	aliasCache.SetEnabled(req.PublicKey, false)

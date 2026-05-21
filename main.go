@@ -1,4 +1,4 @@
-﻿package main
+package main
 
 import (
 	"context"
@@ -24,7 +24,6 @@ func main() {
 
 	// 初始化各组件
 	initGeoIP()
-	initRedis()
 	initComponents()
 
 	if err := initDB(); err != nil {

@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -120,6 +119,33 @@ func getPeerHistory(c *gin.Context) {
 	if err := rows.Err(); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "数据读取错误: " + err.Error()})
 		return
+	}
+
+	// 如果原始表无数据（已降采样），从聚合表补充长时间段数据
+	if len(buckets) == 0 && (period == "24h" || period == "7d") {
+		rows2, err := db.QueryContext(ctx, `
+			SELECT hour_ts, avg_rx_rate, avg_tx_rate 
+			FROM traffic_hourly 
+			WHERE peer_key = ? AND hour_ts >= ? 
+			ORDER BY hour_ts ASC
+		`, pk, startTime)
+		if err == nil {
+			defer rows2.Close()
+			for rows2.Next() {
+				var ts int64
+				var rx, tx float64
+				if err := rows2.Scan(&ts, &rx, &tx); err != nil {
+					continue
+				}
+				slot := (ts / step) * step
+				if _, ok := buckets[slot]; !ok {
+					buckets[slot] = &bucket{}
+				}
+				buckets[slot].rx += rx
+				buckets[slot].tx += tx
+				buckets[slot].count++
+			}
+		}
 	}
 
 	tsList := make([]int64, 0, len(buckets))
@@ -326,6 +352,33 @@ func getTrafficChartData(c *gin.Context) {
 		buckets[slot] = b
 	}
 
+	// 如果原始表无数据（已降采样），从聚合表补充
+	if len(buckets) == 0 && (period == "24h" || period == "7d") {
+		rows2, err := db.QueryContext(ctx, `
+			SELECT hour_ts, SUM(avg_rx_rate), SUM(avg_tx_rate) 
+			FROM traffic_hourly 
+			WHERE hour_ts >= ? 
+			GROUP BY hour_ts 
+			ORDER BY hour_ts ASC
+		`, startTime)
+		if err == nil {
+			defer rows2.Close()
+			for rows2.Next() {
+				var ts int64
+				var rx, tx float64
+				if err := rows2.Scan(&ts, &rx, &tx); err != nil {
+					continue
+				}
+				slot := (ts / step) * step
+				b := buckets[slot]
+				b.rx += rx
+				b.tx += tx
+				b.count++
+				buckets[slot] = b
+			}
+		}
+	}
+
 	if err := rows.Err(); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "数据读取错误: " + err.Error()})
 		return
@@ -351,7 +404,7 @@ func getTrafficChartData(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"labels": tsList, "rx": rxList, "tx": txList})
 }
 
-// setAlias 设置或更新 Peer 别名
+// setAlias 设置或更新 Peer 别名（SQLite 兼容：ON CONFLICT 替代 ON DUPLICATE KEY UPDATE）
 func setAlias(c *gin.Context) {
 	var req struct {
 		PublicKey string `json:"public_key"`
@@ -369,7 +422,7 @@ func setAlias(c *gin.Context) {
 	_, err := db.ExecContext(ctx, `
 		INSERT INTO peer_aliases (public_key, alias) 
 		VALUES (?, ?) 
-		ON DUPLICATE KEY UPDATE alias = VALUES(alias)
+		ON CONFLICT(public_key) DO UPDATE SET alias = excluded.alias
 	`, req.PublicKey, req.Alias)
 
 	if err != nil {
@@ -420,7 +473,7 @@ func getGeoIPInfo(c *gin.Context) {
 
 // ================= 分析 API Handler =================
 
-// getAnalysisHandler 返回 Peer 分析报告（支持 Redis 缓存）
+// getAnalysisHandler 返回 Peer 分析报告
 func getAnalysisHandler(c *gin.Context) {
 	daysStr := c.DefaultQuery("days", "7")
 	days, err := strconv.Atoi(daysStr)
@@ -428,7 +481,7 @@ func getAnalysisHandler(c *gin.Context) {
 		days = 7
 	}
 
-	report, err := getAnalysisReport(c, days)
+	report, err := generateAnalysisReport(c.Request.Context(), days)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -491,8 +544,8 @@ func generateAnalysisReport(ctx context.Context, days int) (*AnalysisReport, err
 			count = 1
 		}
 
-		estRx := int64(rxSum * 6.0 * 1000000 / 8)
-		estTx := int64(txSum * 6.0 * 1000000 / 8)
+		estRx := int64(rxSum * 5.0 * 1000000 / 8) // 5 秒窗口（匹配 CollectInterval）
+		estTx := int64(txSum * 5.0 * 1000000 / 8)
 
 		uptime := (onlineSum / float64(count)) * 100
 		score := int(uptime)
@@ -503,15 +556,7 @@ func generateAnalysisReport(ctx context.Context, days int) (*AnalysisReport, err
 			score = 0
 		}
 
-		alias, ok := aliasCache.Get(pk)
-		if !ok || alias == "" {
-			var dbAlias string
-			err := db.QueryRowContext(ctx, "SELECT alias FROM peer_aliases WHERE public_key = ?", pk).Scan(&dbAlias)
-			if err == nil && dbAlias != "" {
-				alias = dbAlias
-				aliasCache.Set(pk, alias)
-			}
-		}
+		alias, _ := aliasCache.Get(pk)
 
 		var allowedIPs []string
 		var endpointStr string
@@ -617,38 +662,4 @@ func generateAnalysisReport(ctx context.Context, days int) (*AnalysisReport, err
 	}
 
 	return report, nil
-}
-
-// getAnalysisReport 先查 Redis 缓存，未命中时调用 generateAnalysisReport
-func getAnalysisReport(c *gin.Context, days int) (*AnalysisReport, error) {
-	if !redisEnabled {
-		report, err := generateAnalysisReport(c.Request.Context(), days)
-		if err == nil {
-			c.Header("X-Cache", "DISABLED")
-		}
-		return report, err
-	}
-
-	cacheKey := fmt.Sprintf("wg:cache:analysis:%d", days)
-
-	val, err := rdb.Get(c.Request.Context(), cacheKey).Result()
-	if err == nil {
-		var report AnalysisReport
-		if err := json.Unmarshal([]byte(val), &report); err == nil {
-			c.Header("X-Cache", "HIT")
-			metrics.IncCacheHits()
-			return &report, nil
-		}
-	}
-
-	metrics.IncCacheMisses()
-
-	report, err := generateAnalysisReport(c.Request.Context(), days)
-	if err == nil {
-		jsonBytes, _ := json.Marshal(report)
-		rdb.Set(c.Request.Context(), cacheKey, jsonBytes, 1*time.Minute)
-		c.Header("X-Cache", "MISS")
-	}
-
-	return report, err
 }

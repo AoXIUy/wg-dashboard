@@ -25,10 +25,13 @@ func startSSEBroker(ctx context.Context) {
 
 		case s := <-sseBroker.ClosedClients:
 			sseBroker.mu.Lock()
-			delete(sseBroker.Clients, s)
+			_, exists := sseBroker.Clients[s]
+			if exists {
+				delete(sseBroker.Clients, s)
+				close(s)
+			}
 			clientCount := len(sseBroker.Clients)
 			sseBroker.mu.Unlock()
-			close(s)
 			logger.Printf("SSE 客户端断开，当前连接数: %d", clientCount)
 
 		case msg := <-sseBroker.Message:
@@ -47,46 +50,29 @@ func startSSEBroker(ctx context.Context) {
 			}
 			sseBroker.lastBroadcast.Store(time.Now())
 
+			var toRemove []chan string
 			sseBroker.mu.RLock()
 			for s := range sseBroker.Clients {
 				select {
 				case s <- msg:
 				default:
-					// 客户端阻塞，异步移除
-					go func(client chan string) {
-						sseBroker.mu.Lock()
-						delete(sseBroker.Clients, client)
-						sseBroker.mu.Unlock()
-						close(client)
-					}(s)
+					// 客户端阻塞，记录下来准备移除
+					toRemove = append(toRemove, s)
 				}
 			}
 			sseBroker.mu.RUnlock()
-		}
-	}
-}
 
-// startRedisBroadcastListener 订阅 Redis Pub/Sub 频道，将消息转发给本地 SSE Broker
-func startRedisBroadcastListener(ctx context.Context) {
-	logger.Println("Redis Pub/Sub 监听器已启动")
-	defer logger.Println("Redis Pub/Sub 监听器已停止")
-
-	pubsub := rdb.Subscribe(ctx, "wg:channel:broadcast")
-	defer pubsub.Close()
-
-	ch := pubsub.Channel()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case msg, ok := <-ch:
-			if !ok {
-				return
-			}
-			select {
-			case sseBroker.Message <- msg.Payload:
-			default:
+			if len(toRemove) > 0 {
+				sseBroker.mu.Lock()
+				for _, client := range toRemove {
+					if _, exists := sseBroker.Clients[client]; exists {
+						delete(sseBroker.Clients, client)
+						close(client)
+					}
+				}
+				clientCount := len(sseBroker.Clients)
+				sseBroker.mu.Unlock()
+				logger.Printf("移除阻塞的 SSE 客户端，当前连接数: %d", clientCount)
 			}
 		}
 	}

@@ -3,10 +3,8 @@ package main
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"math"
 	"sort"
-	"strconv"
 	"time"
 )
 
@@ -74,25 +72,17 @@ type AdvancedReport struct {
 func (ae *AnalysisEngine) DetectAnomalies() ([]AnomalyEvent, error) {
 	var anomalies []AnomalyEvent
 
-	// 1. 尝试从 Redis 获取预计算的基线 (Baseline)
-	baselines := make(map[string]PeerBaseline)
-	if redisEnabled && rdb != nil {
-		cacheKey := "wg:cache:peer_baseline"
-		val, err := rdb.Get(context.Background(), cacheKey).Result()
-		if err == nil && val != "" {
-			_ = json.Unmarshal([]byte(val), &baselines)
-		}
-	}
+	// 从内存基线缓存获取（替代 Redis）
+	baselines := baselineCache.Get()
 
 	if len(baselines) == 0 {
 		logger.Println("未找到 Peer 基线缓存，跳过异常检测")
-		// 如果必须立刻计算也能在此直接发起查询，但基于 KISS 原则我们等待预计算完成
 		return anomalies, nil
 	}
 
-	// 2. 获取过去 15 分钟的最新流量数据，以此检查近期是否有突发或持续高负载
+	// 获取过去 15 分钟的最新流量数据
 	query := `
-		SELECT peer_public_key, (rx_bytes + tx_bytes) / 1048576 AS total_mb
+		SELECT peer_public_key, (rx_bytes + tx_bytes) / 1048576.0 AS total_mb
 		FROM traffic_history 
 		WHERE timestamp > ? 
 		ORDER BY timestamp ASC`
@@ -115,7 +105,7 @@ func (ae *AnalysisEngine) DetectAnomalies() ([]AnomalyEvent, error) {
 		recentTraffic[pk] = append(recentTraffic[pk], totalMB)
 	}
 
-	// 3. 实时异常裁定
+	// 实时异常裁定
 	for pk, history := range recentTraffic {
 		if len(history) == 0 {
 			continue
@@ -123,13 +113,13 @@ func (ae *AnalysisEngine) DetectAnomalies() ([]AnomalyEvent, error) {
 
 		baseline, hasBaseline := baselines[pk]
 		if !hasBaseline || baseline.StdDevMB == 0 {
-			continue // 缺乏基线或无法计算 Z-Score
+			continue
 		}
 
 		currentTraffic := history[len(history)-1]
 		const checkPoints = 3
 
-		// 规则 1: 突发流量 (Z-Score > 3) 且 绝对值 > 50MB (避免小流量误报)
+		// 规则 1: 突发流量 (Z-Score > 3) 且 绝对值 > 50MB
 		zScore := (currentTraffic - baseline.MeanMB) / baseline.StdDevMB
 		if zScore > 3 && currentTraffic > 50 {
 			anomalies = append(anomalies, AnomalyEvent{
@@ -140,8 +130,7 @@ func (ae *AnalysisEngine) DetectAnomalies() ([]AnomalyEvent, error) {
 				Time:      time.Now(),
 			})
 		} else if len(history) >= checkPoints {
-			// 规则 2：持续高负载 (> 500MB，要求至少能验证近 3 个点皆为高负载)
-			// 改为 else if，防止与规则 1 对同一 Peer 同时触发双重告警
+			// 规则 2：持续高负载 (> 500MB)
 			isHighLoad := true
 			for i := 0; i < checkPoints; i++ {
 				if history[len(history)-1-i] < 500 {
@@ -167,10 +156,10 @@ func (ae *AnalysisEngine) DetectAnomalies() ([]AnomalyEvent, error) {
 // ================= 2. 客户流失预测 (Churn Prediction) =================
 
 func (ae *AnalysisEngine) PredictChurn() ([]ChurnRisk, error) {
-	// 获取过去 30 天的每日汇总流量
+	// 获取过去 30 天的每日汇总流量（SQLite 兼容语法）
 	query := `
 		SELECT peer_public_key, 
-		       FLOOR(timestamp / 86400) * 86400 as day_ts,
+		       (timestamp / 86400) * 86400 as day_ts,
 			   SUM(rx_bytes + tx_bytes) as daily_total
 		FROM traffic_history
 		WHERE timestamp > ?
@@ -180,11 +169,37 @@ func (ae *AnalysisEngine) PredictChurn() ([]ChurnRisk, error) {
 	thirtyDaysAgo := time.Now().Add(-30 * 24 * time.Hour).Unix()
 	rows, err := ae.db.Query(query, thirtyDaysAgo)
 	if err != nil {
+		// 原始表可能已被降采样清理，尝试从聚合表查询
+		return ae.predictChurnFromHourly()
+	}
+	defer rows.Close()
+
+	return ae.processChurnRows(rows)
+}
+
+// predictChurnFromHourly 从小时聚合表计算流失风险（降采样后的备用路径）
+func (ae *AnalysisEngine) predictChurnFromHourly() ([]ChurnRisk, error) {
+	query := `
+		SELECT peer_key, 
+		       (hour_ts / 86400) * 86400 as day_ts,
+			   SUM(total_rx + total_tx) as daily_total
+		FROM traffic_hourly
+		WHERE hour_ts > ?
+		GROUP BY peer_key, day_ts
+		ORDER BY day_ts ASC`
+
+	thirtyDaysAgo := time.Now().Add(-30 * 24 * time.Hour).Unix()
+	rows, err := ae.db.Query(query, thirtyDaysAgo)
+	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	// 组织数据: Peer -> [DayIndex]Traffic
+	return ae.processChurnRows(rows)
+}
+
+// processChurnRows 通用流失风险处理逻辑
+func (ae *AnalysisEngine) processChurnRows(rows *sql.Rows) ([]ChurnRisk, error) {
 	peerDaily := make(map[string]map[int64]float64)
 	allPeers := make(map[string]bool)
 
@@ -208,7 +223,6 @@ func (ae *AnalysisEngine) PredictChurn() ([]ChurnRisk, error) {
 	for pk := range allPeers {
 		dailyData := peerDaily[pk]
 
-		// 1. 计算最后一次活跃距离现在的天数
 		var lastActiveTs int64 = 0
 		for ts := range dailyData {
 			if ts > lastActiveTs {
@@ -220,17 +234,15 @@ func (ae *AnalysisEngine) PredictChurn() ([]ChurnRisk, error) {
 		if lastActiveTs > 0 {
 			daysOffline = int((now - lastActiveTs) / 86400)
 		} else {
-			daysOffline = 30 // 既然查出来了但没数据(其实group by不会出现这种情况，防御性编程)，或者30天内无数据
+			daysOffline = 30
 		}
 
-		// 2. 线性回归计算趋势斜率
-		// 将时间戳归一化为 0, 1, 2... (第几天)
+		// 线性回归计算趋势斜率
 		var x []float64
 		var y []float64
 		var startTs int64
 		if len(dailyData) > 0 {
-			// 找到最早的一天
-			startTs = now // init
+			startTs = now
 			for ts := range dailyData {
 				if ts < startTs {
 					startTs = ts
@@ -246,7 +258,6 @@ func (ae *AnalysisEngine) PredictChurn() ([]ChurnRisk, error) {
 
 		slope := linearRegression(x, y)
 
-		// 3. 判定风险等级
 		riskLevel := "low"
 		riskScore := 0.0
 
@@ -259,7 +270,7 @@ func (ae *AnalysisEngine) PredictChurn() ([]ChurnRisk, error) {
 		} else if slope < -0.5 && daysOffline > 3 {
 			riskLevel = "medium"
 			riskScore = 60.0
-		} else if slope < -1.0 { // 流量急剧下降
+		} else if slope < -1.0 {
 			riskLevel = "medium"
 			riskScore = 50.0
 		}
@@ -275,7 +286,6 @@ func (ae *AnalysisEngine) PredictChurn() ([]ChurnRisk, error) {
 		}
 	}
 
-	// 按风险分数排序
 	sort.Slice(risks, func(i, j int) bool {
 		return risks[i].RiskScore > risks[j].RiskScore
 	})
@@ -297,7 +307,6 @@ func linearRegression(x, y []float64) float64 {
 		sumXX += x[i] * x[i]
 	}
 
-	// Slope (m) = (n*sumXY - sumX*sumY) / (n*sumXX - sumX*sumX)
 	denominator := n*sumXX - sumX*sumX
 	if denominator == 0 {
 		return 0
@@ -305,14 +314,14 @@ func linearRegression(x, y []float64) float64 {
 	return (n*sumXY - sumX*sumY) / denominator
 }
 
-// ================= 3. 最佳连接时间 & 全局热力图 (Optimal Time & Heatmap) =================
+// ================= 3. 最佳连接时间 & 全局热力图 =================
 
 func (ae *AnalysisEngine) RefinedAnalysis() (OptimalTime, [][]float64, []HourlyTraffic, error) {
-	// 使用 rx_rate 和 tx_rate，更直接反映带宽压力
+	// SQLite 兼容语法：使用 strftime 替代 MySQL 的 HOUR/DAYOFWEEK
 	query := `
 		SELECT 
-			HOUR(FROM_UNIXTIME(timestamp)) as hour_of_day,
-			DAYOFWEEK(FROM_UNIXTIME(timestamp)) as day_of_week, 
+			CAST(strftime('%H', timestamp, 'unixepoch', 'localtime') AS INTEGER) as hour_of_day,
+			CAST(strftime('%w', timestamp, 'unixepoch', 'localtime') AS INTEGER) as day_of_week, 
 			AVG(rx_rate) as avg_rx,
 			AVG(tx_rate) as avg_tx
 		FROM traffic_history
@@ -322,32 +331,60 @@ func (ae *AnalysisEngine) RefinedAnalysis() (OptimalTime, [][]float64, []HourlyT
 	sevenDaysAgo := time.Now().Add(-7 * 24 * time.Hour).Unix()
 	rows, err := ae.db.Query(query, sevenDaysAgo)
 	if err != nil {
+		// 原始表可能已降采样，尝试从聚合表查询
+		return ae.refinedAnalysisFromHourly()
+	}
+	defer rows.Close()
+
+	return ae.processRefinedRows(rows)
+}
+
+// refinedAnalysisFromHourly 从小时聚合表执行时段分析
+func (ae *AnalysisEngine) refinedAnalysisFromHourly() (OptimalTime, [][]float64, []HourlyTraffic, error) {
+	query := `
+		SELECT 
+			CAST(strftime('%H', hour_ts, 'unixepoch', 'localtime') AS INTEGER) as hour_of_day,
+			CAST(strftime('%w', hour_ts, 'unixepoch', 'localtime') AS INTEGER) as day_of_week, 
+			AVG(avg_rx_rate) as avg_rx,
+			AVG(avg_tx_rate) as avg_tx
+		FROM traffic_hourly
+		WHERE hour_ts > ?
+		GROUP BY day_of_week, hour_of_day`
+
+	sevenDaysAgo := time.Now().Add(-7 * 24 * time.Hour).Unix()
+	rows, err := ae.db.Query(query, sevenDaysAgo)
+	if err != nil {
 		return OptimalTime{}, nil, nil, err
 	}
 	defer rows.Close()
 
-	// 7x24 Heatmap (Combined Load)
+	return ae.processRefinedRows(rows)
+}
+
+// processRefinedRows 通用时段分析处理
+func (ae *AnalysisEngine) processRefinedRows(rows *sql.Rows) (OptimalTime, [][]float64, []HourlyTraffic, error) {
+	// 7x24 Heatmap
 	heatmap := make([][]float64, 7)
 	for i := range heatmap {
 		heatmap[i] = make([]float64, 24)
 	}
 
-	// Hourly Profile (24h) - Accumulators
 	hourlyRxSum := make([]float64, 24)
 	hourlyTxSum := make([]float64, 24)
-	hourlyCounts := make([]int, 24) // How many days of data for this hour
+	hourlyCounts := make([]int, 24)
 
 	for rows.Next() {
 		var h, d int
-		var rx, tx float64 // Mbps
+		var rx, tx float64
 		if err := rows.Scan(&h, &d, &rx, &tx); err != nil {
 			continue
 		}
 
-		dayIdx := d - 1
-		if dayIdx >= 0 && dayIdx < 7 && h >= 0 && h < 24 {
+		// SQLite strftime('%w') 返回 0=Sunday，与 MySQL DAYOFWEEK 不同
+		// 统一为 0-6 索引
+		if d >= 0 && d < 7 && h >= 0 && h < 24 {
 			totalRate := rx + tx
-			heatmap[dayIdx][h] = totalRate
+			heatmap[d][h] = totalRate
 
 			hourlyRxSum[h] += rx
 			hourlyTxSum[h] += tx
@@ -355,9 +392,7 @@ func (ae *AnalysisEngine) RefinedAnalysis() (OptimalTime, [][]float64, []HourlyT
 		}
 	}
 
-	// Build Hourly Profile
 	var hourlyProfile []HourlyTraffic
-	// Also calc total avg for Optimal Time
 	hourlyTotalAvg := make([]float64, 24)
 
 	for i := 0; i < 24; i++ {
@@ -375,8 +410,7 @@ func (ae *AnalysisEngine) RefinedAnalysis() (OptimalTime, [][]float64, []HourlyT
 		hourlyTotalAvg[i] = rxAvg + txAvg
 	}
 
-	// Calculate Optimal Time (Low traffic window)
-	// Find the 3-hour window with lowest sum
+	// 找最低负载的 3 小时窗口
 	minTraffic := math.MaxFloat64
 	bestHour := 0
 
@@ -392,7 +426,6 @@ func (ae *AnalysisEngine) RefinedAnalysis() (OptimalTime, [][]float64, []HourlyT
 		}
 	}
 
-	// Calculate average load during that window
 	optimalLoad := minTraffic / 3
 
 	return OptimalTime{
@@ -402,16 +435,14 @@ func (ae *AnalysisEngine) RefinedAnalysis() (OptimalTime, [][]float64, []HourlyT
 	}, heatmap, hourlyProfile, nil
 }
 
-// ================= 4. Peer 统计分析 (Peer Statistics) =================
+// ================= 4. Peer 统计分析 =================
 
 func (ae *AnalysisEngine) AnalyzePeers() ([]PeerStats, error) {
-	// 确保别名缓存为最新，避免后续 N+1 查询
 	if aliasCache.NeedsRefresh() {
 		aliasCache.Refresh(context.Background())
 	}
 
-	// 查询过去 7 天的流量统计
-	// [修改] 使用 rx_rate/tx_rate 积分估算流量，而非直接均值或 sum bytes
+	// SQLite 兼容查询
 	query := `
 		SELECT 
 			peer_public_key,
@@ -427,13 +458,16 @@ func (ae *AnalysisEngine) AnalyzePeers() ([]PeerStats, error) {
 	sevenDaysAgo := time.Now().Add(-7 * 24 * time.Hour).Unix()
 	rows, err := ae.db.Query(query, sevenDaysAgo)
 	if err != nil {
-		return nil, err
+		// 原始表可能已降采样，尝试从聚合表查询
+		return ae.analyzePeersFromHourly()
 	}
 	defer rows.Close()
 
 	var peerStats []PeerStats
+	hasData := false
 
 	for rows.Next() {
+		hasData = true
 		var pk string
 		var dimRxRate, dimTxRate float64
 		var totalRecords, onlineRecords int
@@ -443,45 +477,26 @@ func (ae *AnalysisEngine) AnalyzePeers() ([]PeerStats, error) {
 			continue
 		}
 
-		// 1. 流量估算 (Rate Integration)
-		// TotalBytes ≈ Sum(Rate_Mbps) * Window_sec * 1,000,000 / 8
-		const WindowSec = 6.0
+		// 流量估算
+		const WindowSec = 5.0 // 与 CollectInterval 匹配（改为 5 秒）
 		totalRx := int64(dimRxRate * WindowSec * 1000000 / 8)
 		totalTx := int64(dimTxRate * WindowSec * 1000000 / 8)
 
-		// 【实时融合】从 Redis 获取该 Peer 的实时 last_seen，取两者最大值：
-		// MySQL MAX(timestamp) 受 WriteInterval(6s)/BufferSize(1000) 影响可能有延迟；
-		// Redis wg:peer:state:{pk} 在每个采集周期（2s）都会更新，更为实时。
-		if redisEnabled && rdb != nil {
-			key := "wg:peer:state:" + pk
-			if val, err := rdb.HGet(context.Background(), key, "last_seen").Result(); err == nil {
-				if redisSeen, err := strconv.ParseInt(val, 10, 64); err == nil && redisSeen > lastSeen {
-					lastSeen = redisSeen
-				}
+		// 从内存状态缓存获取实时 last_seen
+		if state, ok := peerStateCache.Get(pk); ok {
+			if state.LastSeen > lastSeen {
+				lastSeen = state.LastSeen
 			}
 		}
 
-		// 2. 健康分计算（使用融合后的实时 lastSeen）
 		healthScore := calculateHealthScore(onlineRecords, totalRecords, lastSeen)
 
-		// 3. 在线率
 		uptimePercent := 0.0
 		if totalRecords > 0 {
 			uptimePercent = (float64(onlineRecords) / float64(totalRecords)) * 100
 		}
 
-		// 获取别名（使用内存缓存，避免 N+1 查询）
-		alias, ok := aliasCache.Get(pk)
-		// 如果缓存未命中,直接查询数据库作为备份
-		if !ok || alias == "" {
-			var dbAlias string
-			err := ae.db.QueryRow("SELECT alias FROM peer_aliases WHERE public_key = ?", pk).Scan(&dbAlias)
-			if err == nil && dbAlias != "" {
-				alias = dbAlias
-				// 更新缓存
-				aliasCache.Set(pk, alias)
-			}
-		}
+		alias, _ := aliasCache.Get(pk)
 
 		peerStats = append(peerStats, PeerStats{
 			PublicKey:     pk,
@@ -494,7 +509,66 @@ func (ae *AnalysisEngine) AnalyzePeers() ([]PeerStats, error) {
 		})
 	}
 
-	// 按流量排序（降序）
+	// 如果原始表无数据（已降采样），从聚合表补充
+	if !hasData {
+		return ae.analyzePeersFromHourly()
+	}
+
+	sort.Slice(peerStats, func(i, j int) bool {
+		return (peerStats[i].TotalRx + peerStats[i].TotalTx) > (peerStats[j].TotalRx + peerStats[j].TotalTx)
+	})
+
+	return peerStats, nil
+}
+
+// analyzePeersFromHourly 从小时聚合表分析 Peer 统计（降采样后的备用路径）
+func (ae *AnalysisEngine) analyzePeersFromHourly() ([]PeerStats, error) {
+	query := `
+		SELECT 
+			peer_key,
+			SUM(total_rx) as sum_rx,
+			SUM(total_tx) as sum_tx,
+			SUM(sample_count) as total_records,
+			AVG(online_pct) as avg_online,
+			MAX(hour_ts) as last_seen
+		FROM traffic_hourly
+		WHERE hour_ts > ?
+		GROUP BY peer_key`
+
+	sevenDaysAgo := time.Now().Add(-7 * 24 * time.Hour).Unix()
+	rows, err := ae.db.Query(query, sevenDaysAgo)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var peerStats []PeerStats
+
+	for rows.Next() {
+		var pk string
+		var totalRx, totalTx, totalRecords int64
+		var avgOnline float64
+		var lastSeen int64
+
+		if err := rows.Scan(&pk, &totalRx, &totalTx, &totalRecords, &avgOnline, &lastSeen); err != nil {
+			continue
+		}
+
+		healthScore := calculateHealthScore(int(float64(totalRecords)*avgOnline/100), int(totalRecords), lastSeen)
+
+		alias, _ := aliasCache.Get(pk)
+
+		peerStats = append(peerStats, PeerStats{
+			PublicKey:     pk,
+			Alias:         alias,
+			TotalRx:       totalRx,
+			TotalTx:       totalTx,
+			HealthScore:   healthScore,
+			UptimePercent: avgOnline,
+			LastSeenTime:  lastSeen,
+		})
+	}
+
 	sort.Slice(peerStats, func(i, j int) bool {
 		return (peerStats[i].TotalRx + peerStats[i].TotalTx) > (peerStats[j].TotalRx + peerStats[j].TotalTx)
 	})
@@ -507,44 +581,31 @@ func calculateHealthScore(onlineRecords, totalRecords int, lastSeen int64) float
 		return 0
 	}
 
-	// 1. 基础分 (BaseScore) = 在线率
 	baseScore := (float64(onlineRecords) / float64(totalRecords)) * 100
 
-	// 2. 惩罚分 (Penalty)
 	penalty := 0.0
-	// 僵尸节点惩罚：如果 LastSeen 早于 24小时前，扣除 30 分
 	if lastSeen < time.Now().Add(-24*time.Hour).Unix() {
 		penalty = 30.0
 	}
 
-	// 3. 最终得分
 	score := baseScore - penalty
 
-	// 边界处理
 	if score < 0 {
 		score = 0
 	}
-	// 理论上 baseScore <= 100, penalty >= 0, 所以 score <= 100
 
 	return math.Round(score)
 }
 
 func (ae *AnalysisEngine) GetAdvancedReport() (AdvancedReport, error) {
-	// 1. 尝试从 Redis 获取缓存
-	if redisEnabled && rdb != nil {
-		cacheKey := "wg:cache:advanced_report"
-		val, err := rdb.Get(context.Background(), cacheKey).Result()
-		if err == nil {
-			var report AdvancedReport
-			if json.Unmarshal([]byte(val), &report) == nil {
-				metrics.IncCacheHits()
-				return report, nil
-			}
-		}
-		metrics.IncCacheMisses()
+	// 从内存 TTL 缓存获取（替代 Redis）
+	if report, ok := advancedReportCache.Get(); ok {
+		metrics.IncCacheHits()
+		return report, nil
 	}
+	metrics.IncCacheMisses()
 
-	// 2. 缓存未命中，执行原有查询逻辑
+	// 缓存未命中，执行查询
 	anomalies, err := ae.DetectAnomalies()
 	if err != nil {
 		return AdvancedReport{}, err
@@ -573,9 +634,6 @@ func (ae *AnalysisEngine) GetAdvancedReport() (AdvancedReport, error) {
 		HourlyProfile: hourlyProfile,
 		Peers:         peerStats,
 	}
-
-	// 缓存写入统一由 precompute.go 中的 precomputeAnalysisReport 负责定期刷新（2 分钟 TTL）。
-	// 此处不主动写入，避免与预计算任务双写竞争导致 TTL 时效混乱。
 
 	return report, nil
 }

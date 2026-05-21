@@ -7,12 +7,10 @@ import (
 	"os/exec"
 	"runtime"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/go-redis/redis/v8"
 	"github.com/shirou/gopsutil/v3/cpu"
 	"github.com/shirou/gopsutil/v3/host"
 	"github.com/shirou/gopsutil/v3/mem"
@@ -20,6 +18,45 @@ import (
 )
 
 // ================= 系统信息采集 =================
+
+var (
+	cachedSysInfo   SystemInfo
+	cachedSysInfoMu sync.RWMutex
+)
+
+// startSysInfoCollector 定时后台采集系统指标，规避同步高频采样带来的性能瓶颈
+func startSysInfoCollector(ctx context.Context) {
+	logger.Println("系统指标异步采集器已启动")
+	defer logger.Println("系统指标异步采集器已停止")
+
+	// 启动时立即采集一次
+	info := collectSystemInfo()
+	cachedSysInfoMu.Lock()
+	cachedSysInfo = info
+	cachedSysInfoMu.Unlock()
+
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			info := collectSystemInfo()
+			cachedSysInfoMu.Lock()
+			cachedSysInfo = info
+			cachedSysInfoMu.Unlock()
+		}
+	}
+}
+
+// getCachedSystemInfo 获取缓存的最新系统指标，规避主流程同步采样开销
+func getCachedSystemInfo() SystemInfo {
+	cachedSysInfoMu.RLock()
+	defer cachedSysInfoMu.RUnlock()
+	return cachedSysInfo
+}
 
 // collectSystemInfo 采集 CPU、内存、温度、主机信息
 func collectSystemInfo() SystemInfo {
@@ -52,7 +89,7 @@ func collectSystemInfo() SystemInfo {
 
 // ================= Peer 数据采集 =================
 
-// collectPeersData 从 WireGuard 内核读取所有 Peer 状态，合并 Redis/别名缓存后返回
+// collectPeersData 从 WireGuard 内核读取所有 Peer 状态，合并内存缓存后返回
 func collectPeersData() ([]PeerData, string, int, error) {
 	client, err := wgctrl.New()
 	if err != nil {
@@ -68,21 +105,6 @@ func collectPeersData() ([]PeerData, string, int, error) {
 	// 刷新别名缓存（如果过期则后台异步刷新）
 	if aliasCache.NeedsRefresh() {
 		go aliasCache.Refresh(context.Background())
-	}
-
-	// 批量获取 Redis 状态
-	var redisCmds map[string]*redis.StringStringMapCmd
-	if redisEnabled {
-		pipe := rdb.Pipeline()
-		redisCmds = make(map[string]*redis.StringStringMapCmd)
-		for _, p := range device.Peers {
-			key := fmt.Sprintf("wg:peer:state:%s", p.PublicKey.String())
-			redisCmds[p.PublicKey.String()] = pipe.HGetAll(context.Background(), key)
-		}
-		if _, err := pipe.Exec(context.Background()); err != nil {
-			logger.Printf("Redis Pipeline 执行失败: %v", err)
-			metrics.IncRedisErrors()
-		}
 	}
 
 	var peers []PeerData
@@ -103,15 +125,12 @@ func collectPeersData() ([]PeerData, string, int, error) {
 		var isOnline bool
 		var lastSeenTime int64
 
-		// 从 Redis 获取实时状态
-		if redisEnabled && redisCmds != nil {
-			if val, err := redisCmds[pk].Result(); err == nil && len(val) > 0 {
-				rxRate, _ = strconv.ParseFloat(val["rx_rate"], 64)
-				txRate, _ = strconv.ParseFloat(val["tx_rate"], 64)
-				onlineInt, _ := strconv.Atoi(val["is_online"])
-				isOnline = onlineInt == 1
-				lastSeenTime, _ = strconv.ParseInt(val["last_seen"], 10, 64)
-			}
+		// 从内存状态缓存获取实时状态（替代 Redis Hash）
+		if state, ok := peerStateCache.Get(pk); ok {
+			rxRate = state.RxRate
+			txRate = state.TxRate
+			isOnline = state.IsOnline
+			lastSeenTime = state.LastSeen
 		}
 
 		// 回退到握手时间判断在线状态
@@ -145,39 +164,11 @@ func collectPeersData() ([]PeerData, string, int, error) {
 	}
 
 	// 补充被内核层禁用的 peer（存在 peer_configs 表但已从 WireGuard 移除）
-	if db != nil {
-		disCtx, disCancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer disCancel()
-
-		rows, dbErr := db.QueryContext(disCtx, "SELECT public_key, peer_block FROM peer_configs")
-		if dbErr == nil {
-			defer rows.Close()
-			existingKeys := make(map[string]bool, len(peers))
-			for _, p := range peers {
-				existingKeys[p.PublicKey] = true
-			}
-
-			for rows.Next() {
-				var dpk, dblock string
-				if err := rows.Scan(&dpk, &dblock); err != nil {
-					continue
-				}
-				if existingKeys[dpk] {
-					continue
-				}
-				alias, _ := aliasCache.Get(dpk)
-				allowedIPs := parsePeerBlockIPs(dblock)
-				peers = append(peers, PeerData{
-					PublicKey:  dpk,
-					AllowedIPs: allowedIPs,
-					Endpoint:   "未连接",
-					Alias:      alias,
-					IsOnline:   false,
-					Enabled:    false, // 明确标记为禁用
-				})
-			}
-		}
+	existingKeys := make(map[string]bool, len(peers))
+	for _, p := range peers {
+		existingKeys[p.PublicKey] = true
 	}
+	peers = append(peers, fetchDisabledPeers(existingKeys)...)
 
 	// 排序：启用 > 禁用；在线 > 离线；速率降序；握手时间降序
 	sort.Slice(peers, func(i, j int) bool {
@@ -217,6 +208,45 @@ func parsePeerBlockIPs(block string) []string {
 		}
 	}
 	return ips
+}
+
+// fetchDisabledPeers 获取在 peer_configs 中存在但当前不存在于 WireGuard 接口中的 Peer（被禁用 Peer）
+func fetchDisabledPeers(existingKeys map[string]bool) []PeerData {
+	if db == nil {
+		return nil
+	}
+
+	disCtx, disCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer disCancel()
+
+	rows, err := db.QueryContext(disCtx, "SELECT public_key, peer_block FROM peer_configs")
+	if err != nil {
+		logger.Printf("获取禁用 peer 失败: %v", err)
+		return nil
+	}
+	defer rows.Close()
+
+	var disabledPeers []PeerData
+	for rows.Next() {
+		var dpk, dblock string
+		if err := rows.Scan(&dpk, &dblock); err != nil {
+			continue
+		}
+		if existingKeys[dpk] {
+			continue
+		}
+		alias, _ := aliasCache.Get(dpk)
+		allowedIPs := parsePeerBlockIPs(dblock)
+		disabledPeers = append(disabledPeers, PeerData{
+			PublicKey:  dpk,
+			AllowedIPs: allowedIPs,
+			Endpoint:   "未连接",
+			Alias:      alias,
+			IsOnline:   false,
+			Enabled:    false, // 明确标记为禁用
+		})
+	}
+	return disabledPeers
 }
 
 // ================= 数据采集 Pipeline =================
@@ -303,14 +333,9 @@ func startProcessor(ctx context.Context, in <-chan RawSnapshot) {
 	}
 }
 
-// processSnapshot 处理单个快照：计算速率、写入缓冲、更新 Redis
+// processSnapshot 处理单个快照：计算速率、写入缓冲、更新内存状态
 func processSnapshot(ctx context.Context, snap RawSnapshot, stateMap map[string]*PeerState) {
-	var pipe redis.Pipeliner
-	if redisEnabled {
-		pipe = rdb.Pipeline()
-	}
-
-	// 性能优化：同步构建 PeerData，俩面存入全局缓存，防止 broadcastUpdate / pinger 重复向 WG 内核发起查询
+	// 构建 PeerData，存入全局缓存，防止 broadcastUpdate / pinger 重复向 WG 内核发起查询
 	builtPeers := make([]PeerData, 0, len(snap.Peers))
 
 	for _, p := range snap.Peers {
@@ -368,17 +393,21 @@ func processSnapshot(ctx context.Context, snap RawSnapshot, stateMap map[string]
 			go func() {
 				batch := trafficBuffer.Flush()
 				if batch != nil {
-					flushMySQL(batch)
+					flushSQLite(batch)
 				}
 			}()
 		}
 
-		// 更新 Redis 状态（批量 Pipeline）
-		if redisEnabled && pipe != nil {
-			updateRedisState(pipe, ctx, pk, rxRate, txRate, isOnline, epStr, snap.Timestamp.Unix())
-		}
+		// 更新内存状态缓存（替代 Redis Pipeline）
+		peerStateCache.Update(pk, PeerRealtimeState{
+			RxRate:   rxRate,
+			TxRate:   txRate,
+			IsOnline: isOnline,
+			Endpoint: epStr,
+			LastSeen: snap.Timestamp.Unix(),
+		})
 
-		// 构建本循环的 PeerData——利用已有数据，无需再次权豆内核
+		// 构建本循环的 PeerData
 		var ips []string
 		for _, ip := range p.AllowedIPs {
 			ips = append(ips, ip.String())
@@ -410,39 +439,12 @@ func processSnapshot(ctx context.Context, snap RawSnapshot, stateMap map[string]
 		})
 	}
 
-	// 补充被内核层禁用的 peer（存在 peer_configs 表但已从 WireGuard 移除），与 collectPeersData 保持一致
-	if db != nil {
-		disCtx, disCancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer disCancel()
-
-		disRows, dbErr := db.QueryContext(disCtx, "SELECT public_key, peer_block FROM peer_configs")
-		if dbErr == nil {
-			defer disRows.Close()
-			existingKeys := make(map[string]bool, len(builtPeers))
-			for _, p := range builtPeers {
-				existingKeys[p.PublicKey] = true
-			}
-			for disRows.Next() {
-				var dpk, dblock string
-				if err := disRows.Scan(&dpk, &dblock); err != nil {
-					continue
-				}
-				if existingKeys[dpk] {
-					continue
-				}
-				alias, _ := aliasCache.Get(dpk)
-				allowedIPs := parsePeerBlockIPs(dblock)
-				builtPeers = append(builtPeers, PeerData{
-					PublicKey:  dpk,
-					AllowedIPs: allowedIPs,
-					Endpoint:   "未连接",
-					Alias:      alias,
-					IsOnline:   false,
-					Enabled:    false, // 明确标记为禁用
-				})
-			}
-		}
+	// 补充被内核层禁用的 peer
+	existingKeys := make(map[string]bool, len(builtPeers))
+	for _, p := range builtPeers {
+		existingKeys[p.PublicKey] = true
 	}
+	builtPeers = append(builtPeers, fetchDisabledPeers(existingKeys)...)
 
 	// 排序：启用 > 禁用；在线 > 离线；速率降序；握手时间降序
 	sort.Slice(builtPeers, func(i, j int) bool {
@@ -461,42 +463,16 @@ func processSnapshot(ctx context.Context, snap RawSnapshot, stateMap map[string]
 		return builtPeers[i].LastHandshake.After(builtPeers[j].LastHandshake)
 	})
 
-	// 将构建好的 PeerData 写入全局缓存，供 broadcastUpdate 和 startPinger 直接读取
+	// 将构建好的 PeerData 写入全局缓存
 	cachedPeersMu.Lock()
 	cachedPeers = builtPeers
 	cachedPeersMu.Unlock()
 
-	// 执行 Redis Pipeline 并广播更新
-	if redisEnabled && pipe != nil {
-		if _, err := pipe.Exec(ctx); err != nil {
-			logger.Printf("Redis Pipeline 执行失败: %v", err)
-			metrics.IncRedisErrors()
-		} else {
-			broadcastUpdate(ctx)
-		}
-	}
+	// 直接广播更新（不经过 Redis Pub/Sub）
+	broadcastUpdate(ctx)
 }
 
-// updateRedisState 将 Peer 实时状态写入 Redis Hash（5 分钟 TTL）
-func updateRedisState(pipe redis.Pipeliner, ctx context.Context, pk string, rxRate, txRate float64, isOnline bool, endpoint string, timestamp int64) {
-	key := fmt.Sprintf("wg:peer:state:%s", pk)
-	onlineVal := 0
-	if isOnline {
-		onlineVal = 1
-	}
-
-	pipe.HSet(ctx, key, map[string]interface{}{
-		"rx_rate":   rxRate,
-		"tx_rate":   txRate,
-		"is_online": onlineVal,
-		"endpoint":  endpoint,
-		"last_seen": timestamp,
-	})
-	pipe.Expire(ctx, key, 5*time.Minute)
-}
-
-// broadcastUpdate 从全局缓存读取最近一次处理结果并推送给所有 SSE 客户端（或 Redis Pub/Sub）
-// 性能优化：不再调用 collectPeersData，消除每个采集周期的第二次 WireGuard 内核查询
+// broadcastUpdate 从全局缓存读取最近一次处理结果并推送给所有 SSE 客户端
 func broadcastUpdate(ctx context.Context) {
 	cachedPeersMu.RLock()
 	if len(cachedPeers) == 0 {
@@ -509,7 +485,7 @@ func broadcastUpdate(ctx context.Context) {
 
 	update := DashboardUpdate{
 		Peers:     peers,
-		System:    collectSystemInfo(),
+		System:    getCachedSystemInfo(),
 		Timestamp: time.Now().Unix(),
 	}
 
@@ -519,19 +495,11 @@ func broadcastUpdate(ctx context.Context) {
 		return
 	}
 
-	if redisEnabled {
-		if err := rdb.Publish(ctx, "wg:channel:broadcast", string(jsonData)).Err(); err != nil {
-			logger.Printf("Redis 发布失败: %v", err)
-			metrics.IncRedisErrors()
-		}
-	} else {
-		select {
-		case sseBroker.Message <- string(jsonData):
-		default:
-			// BUG-6 修复：记录丢帧警告，便于运维发现"数据卡住"问题；
-			// 原因通常是 SSE 客户端消费慢导致通道（容量100）被打满。
-			logger.Println("警告: SSE Message 通道已满，丢弃本次广播帧")
-		}
+	// 直接推送到 SSE Broker
+	select {
+	case sseBroker.Message <- string(jsonData):
+	default:
+		logger.Println("警告: SSE Message 通道已满，丢弃本次广播帧")
 	}
 }
 
@@ -554,7 +522,7 @@ func startPinger(ctx context.Context) {
 				continue
 			}
 
-			// 性能优化：从全局缓存读取 Peer 列表，不再重复查询 WireGuard 内核
+			// 从全局缓存读取 Peer 列表，不再重复查询 WireGuard 内核
 			cachedPeersMu.RLock()
 			if len(cachedPeers) == 0 {
 				cachedPeersMu.RUnlock()
@@ -599,8 +567,7 @@ func startPinger(ctx context.Context) {
 	}
 }
 
-// pingHost 对指定 IP 执行单次 Ping。
-// 性能修复：解析 ping 输出获取真实 RTT，而非依赖进程总耗时（含进程启动开销）
+// pingHost 对指定 IP 执行单次 Ping，解析输出获取真实 RTT
 func pingHost(ip string) int64 {
 	var cmd *exec.Cmd
 
@@ -618,14 +585,12 @@ func pingHost(ip string) int64 {
 	outStr := string(out)
 
 	if runtime.GOOS == "windows" {
-		// 解析 Windows ping 输出获取平均 RTT
 		r := &PingResponse{}
 		parseWindowsPing(r, outStr)
 		if r.PacketsReceived > 0 {
 			return int64(r.AvgRtt)
 		}
 	} else {
-		// 解析 Linux ping 输出获取平均 RTT
 		r := &PingResponse{}
 		parseLinuxPing(r, outStr)
 		if r.PacketsReceived > 0 {
