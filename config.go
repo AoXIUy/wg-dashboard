@@ -38,6 +38,7 @@ var (
 	JWTSecret     string
 	GeoCityPath   string
 	GeoASNPath    string
+	GeoXDBPath    string // ip2region v2 xdb 数据库路径（可选，专为中国 IPv4/IPv6 优化）
 )
 
 // ================= 全局变量 =================

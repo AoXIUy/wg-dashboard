@@ -45,8 +45,26 @@ func initLogger() {
 
 // ================= 初始化辅助 =================
 
-// initGeoIP 根据命令行参数加载 GeoLite2 数据库；任一文件存在即初始化
+// initGeoIP 根据命令行参数加载地理 IP 数据库
+// 优先级：ip2region xdb（中国优化）> GeoLite2-City > 外部 API 回退
+// 各数据源均为可选，缺失时自动降级，不影响程序启动
 func initGeoIP() {
+	var providers []ipapi.Provider
+
+	// ① ip2region v2 xdb（专为中国 IPv4/IPv6 优化，优先级最高）
+	if _, err := os.Stat(GeoXDBPath); err == nil {
+		xdbProvider, err := ipapi.NewIP2RegionProvider(GeoXDBPath)
+		if err != nil {
+			logger.Printf("ip2region xdb 初始化失败: %v", err)
+		} else {
+			providers = append(providers, xdbProvider)
+			logger.Printf("ip2region xdb 已加载: %s", GeoXDBPath)
+		}
+	} else {
+		logger.Printf("ip2region xdb 不存在，跳过: %s（可从 https://github.com/lionsoul2014/ip2region 下载）", GeoXDBPath)
+	}
+
+	// ② GeoLite2-City + ASN（国际 IP 回退）
 	cityExists := false
 	asnExists := false
 
@@ -71,14 +89,22 @@ func initGeoIP() {
 		if asnExists {
 			asnPath = GeoASNPath
 		}
-
-		provider, err := ipapi.NewGeoLite2Provider(cityPath, asnPath, true) // 启用外部 API 回退
+		// 启用外部 API 回退（修复后：城市为空时才触发，不再被 CountryCode 短路）
+		geoLite2Provider, err := ipapi.NewGeoLite2Provider(cityPath, asnPath, true)
 		if err != nil {
-			logger.Printf("GeoIP 初始化失败: %v", err)
+			logger.Printf("GeoLite2 初始化失败: %v", err)
 		} else {
-			ipProvider = provider
-			logger.Println("GeoIP 数据库已加载")
+			providers = append(providers, geoLite2Provider)
+			logger.Println("GeoLite2 数据库已加载")
 		}
+	}
+
+	// 组合所有可用 Provider（至少有一个才启用）
+	if len(providers) > 0 {
+		ipProvider = ipapi.NewChainProvider(providers...)
+		logger.Printf("GeoIP 链式 Provider 已就绪，共 %d 个数据源", len(providers))
+	} else {
+		logger.Println("警告：所有 GeoIP 数据源均不可用，IP 地理位置功能已禁用")
 	}
 }
 
@@ -451,6 +477,7 @@ func parseFlags() {
 	flag.StringVar(&JWTSecret, "secret", "", "JWT 签名密钥 (必填，或设置 WG_JWT_SECRET 环境变量)")
 	flag.StringVar(&GeoCityPath, "geo-city", "./GeoLite2-City.mmdb", "GeoLite2 City 数据库路径")
 	flag.StringVar(&GeoASNPath, "geo-asn", "./GeoLite2-ASN.mmdb", "GeoLite2 ASN 数据库路径")
+	flag.StringVar(&GeoXDBPath, "geo-xdb", "./ip2region.xdb", "ip2region v2 数据库路径（可选，专为中国 IPv4/IPv6 城市解析优化）")
 	flag.Parse()
 
 	// 环境变量优先级高于 flag

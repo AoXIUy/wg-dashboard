@@ -114,9 +114,9 @@ func (p *GeoLite2Provider) GetInfo(ip net.IP) (*Info, error) {
 			info.Latitude = record.Location.Latitude
 			info.Longitude = record.Location.Longitude
 
-			// FIX-低危7: 有 CountryCode 即视为本地成功，不触发完整回退
-			// 减少对坐标和城市的强依赖，避免仅有国家级数据时过度调用外部 API
-			if info.CountryCode != "" {
+			// 修复：CountryCode 有值 且 City 非空，才视为本地数据完整（localSuccess）
+			// 原逻辑仅判断 CountryCode 导致中国 IPv6 只有国家码无城市时跳过 API 回退
+			if info.CountryCode != "" && info.City != "" {
 				localSuccess = true
 				info.Source = "local"
 			}
