@@ -232,12 +232,21 @@ func gracefulShutdown(srv *http.Server, cancel context.CancelFunc, wg *sync.Wait
 
 // ================= 鉴权 =================
 
-// extractToken 仅从 Authorization Header 中提取 JWT。
-// SEC-2：禁止通过 URL Query 参数传递 Token，防止 Token 出现在日志/历史/Referer 中泄露。
+// extractToken 从请求中提取 JWT。
+// 优先从 Authorization Header 中获取（标准方式）。
+// SEC-2 注意：浏览器原生 EventSource API 不支持自定义 Header，
+// 因此 /api/stream 端点例外允许通过 ?token= Query 参数传递，
+// 其他所有 API 端点均强制要求 Authorization Header。
 func extractToken(c *gin.Context) string {
 	bearerToken := c.GetHeader("Authorization")
 	if len(bearerToken) > 7 && strings.ToUpper(bearerToken[0:7]) == "BEARER " {
 		return bearerToken[7:]
+	}
+	// 仅 SSE 端点允许 URL 传参（EventSource 浏览器 API 限制）
+	if c.FullPath() == "/api/stream" {
+		if token := c.Query("token"); token != "" {
+			return token
+		}
 	}
 	return ""
 }
