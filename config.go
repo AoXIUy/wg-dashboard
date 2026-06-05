@@ -39,6 +39,7 @@ var (
 	GeoCityPath   string
 	GeoASNPath    string
 	GeoXDBPath    string // ip2region v2 xdb 数据库路径（可选，专为中国 IPv4/IPv6 优化）
+	CORSOrigin    string // 允许的 CORS 来源（SEC-1：默认 * 允许所有，生产环境建议设置为具体域名）
 )
 
 // ================= 全局变量 =================

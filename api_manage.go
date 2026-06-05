@@ -98,8 +98,19 @@ func addPeer(c *gin.Context) {
 	}
 	defer f.Close()
 
+	// SEC-6：净化 Name 字段，过滤换行符和方括号，防止 WireGuard 配置注入攻击
+	// 攻击者若能注入 \n[Interface]\nPrivateKey=xxx 等字段，可覆盖服务器配置
+	req.Name = strings.TrimSpace(strings.NewReplacer(
+		"\n", " ", "\r", " ", "[", "(", "]", ")",
+	).Replace(req.Name))
+	if len(req.Name) > 64 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Peer 名称不得超过 64 个字符"})
+		return
+	}
+
 	peerBlock := fmt.Sprintf("\n# Name: %s\n[Peer]\nPublicKey = %s\nPresharedKey = %s\nAllowedIPs = %s\n",
 		req.Name, pubKey.String(), presharedKey.String(), req.AllowedIPs)
+
 
 	if _, err := f.WriteString(peerBlock); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "写入配置失败"})

@@ -1,7 +1,7 @@
 package main
 
 import (
-	"net"
+	"context"
 	"sync"
 	"time"
 
@@ -35,15 +35,10 @@ var loginRateLimiter = &rateLimiter{
 	attempts: make(map[string]*loginAttempt),
 }
 
-// getClientIP 从请求中提取真实客户端 IP（支持 X-Forwarded-For）
+// getClientIP 获取客户端真实 IP。
+// SEC-5：不再手动信任 X-Real-IP Header，完全依赖 gin 的 TrustedProxies 配置
+// （在 startHTTPServer 中设置），防止未经代理的客户端伪造 IP 绕过限流。
 func getClientIP(c *gin.Context) string {
-	// 优先读取 X-Real-IP（Nginx 代理时设置）
-	if ip := c.GetHeader("X-Real-IP"); ip != "" {
-		if parsed := net.ParseIP(ip); parsed != nil {
-			return parsed.String()
-		}
-	}
-	// 使用 Gin 内置方法（自动处理 X-Forwarded-For）
 	return c.ClientIP()
 }
 
@@ -112,3 +107,29 @@ func (r *rateLimiter) recordSuccess(ip string) {
 }
 // 注意： rateLimitMiddleware 已删除（死代码）。
 // 登录频率限制由 loginHandler 直接调用 loginRateLimiter.isRateLimited() 实现，无需中间件。
+
+// startCleaner SEC-4：定期扫描并删除过期的限流条目，防止 attempts map 无限增长。
+// 满足以下条件将被删除：封禁已解除 且 失败记录均超出统计窗口。
+func (r *rateLimiter) startCleaner(ctx context.Context) {
+	ticker := time.NewTicker(1 * time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			now := time.Now()
+			cutoff := now.Add(-rateLimitWindow)
+			r.mu.Lock()
+			for ip, a := range r.attempts {
+				// 封禁已过期 且 所有失败记录均超出统计窗口时，删除该条目
+				banExpired := a.bannedUntil.IsZero() || a.bannedUntil.Before(now)
+				failuresExpired := len(a.failures) == 0 || a.failures[len(a.failures)-1].Before(cutoff)
+				if banExpired && failuresExpired {
+					delete(r.attempts, ip)
+				}
+			}
+			r.mu.Unlock()
+		}
+	}
+}

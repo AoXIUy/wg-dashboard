@@ -328,7 +328,8 @@ func boolToInt(b bool) int {
 
 // backupToFile 将写库失败的记录以 JSON 格式备份到本地文件
 func backupToFile(batch []ProcessedLog) {
-	backupDir := "/var/log/wg-monitor"
+	// QA-3：使用数据库文件同目录下的 backup 子目录，避免硬编码 Linux 路径
+	backupDir := filepath.Join(filepath.Dir(DBPath), "backup")
 	if err := os.MkdirAll(backupDir, 0755); err != nil {
 		logger.Printf("创建备份目录失败: %v", err)
 		return

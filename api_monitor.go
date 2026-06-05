@@ -6,13 +6,10 @@ import (
 	"net"
 	"net/http"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"golang.zx2c4.com/wireguard/wgctrl"
-	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
 // ================= 工具函数 =================
@@ -49,8 +46,9 @@ func isValidConfigName(name string) bool {
 // ================= 监控 API Handler =================
 
 // getSystemStatus 返回当前系统资源状态
+// BUG-1：改读异步缓存，避免每次请求同步等待 CPU 采样（在 RK3399 上可能阻塞 ~1s）
 func getSystemStatus(c *gin.Context) {
-	sys := collectSystemInfo()
+	sys := getCachedSystemInfo()
 	c.JSON(http.StatusOK, sys)
 }
 
@@ -473,24 +471,8 @@ func getGeoIPInfo(c *gin.Context) {
 
 // ================= 分析 API Handler =================
 
-// getAnalysisHandler 返回 Peer 分析报告
-func getAnalysisHandler(c *gin.Context) {
-	daysStr := c.DefaultQuery("days", "7")
-	days, err := strconv.Atoi(daysStr)
-	if err != nil || days <= 0 {
-		days = 7
-	}
-
-	report, err := generateAnalysisReport(c.Request.Context(), days)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	c.JSON(http.StatusOK, report)
-}
-
 // generateAnalysisReport 从数据库生成分析报告
+// 注：此函数当前为备用实现，已注册路由使用 analysisEngine.GetAdvancedReport()。
 func generateAnalysisReport(ctx context.Context, days int) (*AnalysisReport, error) {
 	startTime := time.Now().AddDate(0, 0, -days).Unix()
 	report := &AnalysisReport{}
@@ -499,22 +481,32 @@ func generateAnalysisReport(ctx context.Context, days int) (*AnalysisReport, err
 		aliasCache.Refresh(ctx)
 	}
 
-	// 获取实时 WireGuard 设备状态
-	var livePeers map[string]wgtypes.Peer
-	client, err := wgctrl.New()
-	if err == nil {
-		defer client.Close()
-		device, err := client.Device(WGInterface)
-		if err == nil {
-			livePeers = make(map[string]wgtypes.Peer)
-			for _, p := range device.Peers {
-				livePeers[p.PublicKey.String()] = p
+	// BUG-6：直接读取全局 Peer 缓存，避免重复向 WireGuard 内核发起查询
+	cachedPeersMu.RLock()
+	livePeers := make(map[string]PeerData, len(cachedPeers))
+	for _, p := range cachedPeers {
+		livePeers[p.PublicKey] = p
+	}
+	cachedPeersMu.RUnlock()
+
+	// PERF-4：预取各 Peer 最新 endpoint，避免循环内 N+1 数据库查询
+	lastEpMap := make(map[string]string)
+	if epRows, epErr := db.QueryContext(ctx, `
+		SELECT peer_public_key, endpoint
+		FROM traffic_history
+		WHERE rowid IN (
+			SELECT MAX(rowid) FROM traffic_history
+			WHERE endpoint != '' AND timestamp > ?
+			GROUP BY peer_public_key
+		)
+	`, startTime); epErr == nil {
+		defer epRows.Close()
+		for epRows.Next() {
+			var epk, ep string
+			if epRows.Scan(&epk, &ep) == nil {
+				lastEpMap[epk] = ep
 			}
-		} else {
-			logger.Printf("分析引擎: 无法获取接口 %s 信息: %v", WGInterface, err)
 		}
-	} else {
-		logger.Printf("分析引擎: 无法连接 WG 控制器: %v", err)
 	}
 
 	q := `
@@ -564,21 +556,16 @@ func generateAnalysisReport(ctx context.Context, days int) (*AnalysisReport, err
 		var city, countryCode string
 
 		if lp, ok := livePeers[pk]; ok {
-			for _, ip := range lp.AllowedIPs {
-				allowedIPs = append(allowedIPs, ip.String())
-			}
-			if lp.Endpoint != nil {
-				endpointStr = lp.Endpoint.String()
-			}
-			latestHandshake = lp.LastHandshakeTime.Unix()
+			allowedIPs = lp.AllowedIPs
+			endpointStr = lp.Endpoint
+			latestHandshake = lp.LatestHandshake
 		}
 
 		isOnline := time.Since(time.Unix(latestHandshake, 0)) < 3*time.Minute
 
+		// PERF-4：使用预取的 lastEpMap，无需循环内 N+1 查询
 		if endpointStr == "" {
-			var lastEp string
-			db.QueryRowContext(ctx, "SELECT endpoint FROM traffic_history WHERE peer_public_key = ? AND endpoint != '' ORDER BY timestamp DESC LIMIT 1", pk).Scan(&lastEp)
-			endpointStr = lastEp
+			endpointStr = lastEpMap[pk]
 		}
 
 		var latitude, longitude float64

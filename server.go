@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"flag"
 	"fmt"
@@ -173,6 +174,10 @@ func startBackgroundServices(ctx context.Context, wg *sync.WaitGroup, rawChan ch
 	// RK3399 优化：系统指标异步采集器
 	wg.Add(1)
 	go func() { defer wg.Done(); startSysInfoCollector(ctx) }()
+
+	// SEC-4：登录限流条目定期清理，防止 map 无限增长导致内存泄漏
+	wg.Add(1)
+	go func() { defer wg.Done(); loginRateLimiter.startCleaner(ctx) }()
 }
 
 // startCacheRefresher 定期刷新别名缓存
@@ -227,14 +232,12 @@ func gracefulShutdown(srv *http.Server, cancel context.CancelFunc, wg *sync.Wait
 
 // ================= 鉴权 =================
 
-// extractToken 从 Authorization Header 或 Query 参数中提取 JWT
+// extractToken 仅从 Authorization Header 中提取 JWT。
+// SEC-2：禁止通过 URL Query 参数传递 Token，防止 Token 出现在日志/历史/Referer 中泄露。
 func extractToken(c *gin.Context) string {
 	bearerToken := c.GetHeader("Authorization")
 	if len(bearerToken) > 7 && strings.ToUpper(bearerToken[0:7]) == "BEARER " {
 		return bearerToken[7:]
-	}
-	if token := c.Query("token"); token != "" {
-		return token
 	}
 	return ""
 }
@@ -280,7 +283,8 @@ func loginHandler(c *gin.Context) {
 		return
 	}
 
-	if req.Password != AdminPassword {
+	// SEC-3：使用常数时间比较防止时序攻击（timing attack）
+	if subtle.ConstantTimeCompare([]byte(req.Password), []byte(AdminPassword)) != 1 {
 		loginRateLimiter.recordFailure(ip)
 		time.Sleep(500 * time.Millisecond)
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "密码错误"})
@@ -374,6 +378,12 @@ wg_buffer_size %d
 func startHTTPServer() *http.Server {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
+	// SEC-5：仅信任本地回环地址作为可信代理（如同机 Nginx），
+	// 防止客户端伪造 X-Real-IP / X-Forwarded-For 绕过 Rate Limit。
+	// 若部署在其他代理后面，需在此处添加代理 IP。
+	if err := r.SetTrustedProxies([]string{"127.0.0.1", "::1"}); err != nil {
+		logger.Printf("设置受信任代理失败: %v", err)
+	}
 	r.Use(gin.Recovery())
 	r.Use(corsMiddleware())
 
@@ -391,11 +401,10 @@ func startHTTPServer() *http.Server {
 	setupAPIRoutes(r)
 
 	srv := &http.Server{
-		Addr:         ServerPort,
-		Handler:      r,
-		ReadTimeout:  0, // 禁用读取超时以支持 SSE
-		WriteTimeout: 0, // 禁用写入超时以支持 SSE
-		IdleTimeout:  60 * time.Second,
+		Addr:              ServerPort,
+		Handler:           r,
+		ReadHeaderTimeout: 10 * time.Second, // QA-2：仅限制请求头读取时间，防止 Slowloris 攻击；不影响 SSE 长连接正文
+		IdleTimeout:       60 * time.Second,
 	}
 
 	go func() {
@@ -414,9 +423,10 @@ func startHTTPServer() *http.Server {
 }
 
 // corsMiddleware 设置跨域响应头
+// SEC-1：跨域来源由 --cors-origin 参数控制（默认 *），生产环境建议设置为具体域名。
 func corsMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
+		c.Writer.Header().Set("Access-Control-Allow-Origin", CORSOrigin)
 		c.Writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 
@@ -478,6 +488,7 @@ func parseFlags() {
 	flag.StringVar(&GeoCityPath, "geo-city", "./GeoLite2-City.mmdb", "GeoLite2 City 数据库路径")
 	flag.StringVar(&GeoASNPath, "geo-asn", "./GeoLite2-ASN.mmdb", "GeoLite2 ASN 数据库路径")
 	flag.StringVar(&GeoXDBPath, "geo-xdb", "./ip2region.xdb", "ip2region v2 数据库路径（可选，专为中国 IPv4/IPv6 城市解析优化）")
+	flag.StringVar(&CORSOrigin, "cors-origin", "*", "允许的 CORS 来源（默认 * 允许所有来源，生产环境建议设置为具体域名如 https://example.com）")
 	flag.Parse()
 
 	// 环境变量优先级高于 flag
