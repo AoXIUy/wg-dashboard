@@ -475,9 +475,17 @@ func parseFlags() {
 	flag.StringVar(&JWTSecret, "secret", "", "JWT 签名密钥 (必填，或设置 WG_JWT_SECRET 环境变量)")
 	flag.StringVar(&GeoCityPath, "geo-city", "./GeoLite2-City.mmdb", "GeoLite2 City 数据库路径")
 	flag.StringVar(&GeoASNPath, "geo-asn", "./GeoLite2-ASN.mmdb", "GeoLite2 ASN 数据库路径")
+	flag.BoolVar(&IsMockMode, "mock", false, "启用 Mock 沙盒模拟模式（不接触宿主机网络和配置）")
+	flag.StringVar(&WGConfigDir, "config-dir", "", "WireGuard 配置文件目录 (默认: 生产环境为 /etc/wireguard，沙盒/Mock 模式为 ./.sandbox_data/configs)")
 	flag.Parse()
 
 	// 环境变量优先级高于 flag
+	if v := os.Getenv("WG_MOCK"); v == "true" || v == "1" {
+		IsMockMode = true
+	}
+	if v := os.Getenv("WG_CONFIG_DIR"); v != "" {
+		WGConfigDir = v
+	}
 	if v := os.Getenv("WG_ADMIN_PASSWORD"); v != "" {
 		AdminPassword = v
 	}

@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os/exec"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -16,7 +14,6 @@ import (
 	"github.com/shirou/gopsutil/v3/cpu"
 	"github.com/shirou/gopsutil/v3/host"
 	"github.com/shirou/gopsutil/v3/mem"
-	"golang.zx2c4.com/wireguard/wgctrl"
 )
 
 // ================= 系统信息采集 =================
@@ -52,15 +49,9 @@ func collectSystemInfo() SystemInfo {
 
 // ================= Peer 数据采集 =================
 
-// collectPeersData 从 WireGuard 内核读取所有 Peer 状态，合并 Redis/别名缓存后返回
+// collectPeersData 从 WireGuard 执行器读取所有 Peer 状态，合并 Redis/别名缓存后返回
 func collectPeersData() ([]PeerData, string, int, error) {
-	client, err := wgctrl.New()
-	if err != nil {
-		return nil, "", 0, fmt.Errorf("创建 WireGuard 客户端失败: %w", err)
-	}
-	defer client.Close()
-
-	device, err := client.Device(WGInterface)
+	device, err := wgExecutor.GetDevice(WGInterface)
 	if err != nil {
 		return nil, "", 0, fmt.Errorf("获取设备信息失败: %w", err)
 	}
@@ -221,34 +212,10 @@ func parsePeerBlockIPs(block string) []string {
 
 // ================= 数据采集 Pipeline =================
 
-// startCollector 定时从 WireGuard 内核采集快照并推送到 rawChan
+// startCollector 定时从 WireGuard 采集快照并推送到 rawChan
 func startCollector(ctx context.Context, out chan<- RawSnapshot) {
 	logger.Println("采集器已启动")
 	defer logger.Println("采集器已停止")
-
-	var client *wgctrl.Client
-	var err error
-
-	reconnect := func() error {
-		if client != nil {
-			client.Close()
-		}
-		client, err = wgctrl.New()
-		if err != nil {
-			logger.Printf("WireGuard 连接失败: %v", err)
-			return err
-		}
-		return nil
-	}
-
-	if err := reconnect(); err != nil {
-		logger.Printf("初始连接失败，将在后续重试")
-	}
-	defer func() {
-		if client != nil {
-			client.Close()
-		}
-	}()
 
 	ticker := time.NewTicker(CollectInterval)
 	defer ticker.Stop()
@@ -259,16 +226,9 @@ func startCollector(ctx context.Context, out chan<- RawSnapshot) {
 			close(out)
 			return
 		case <-ticker.C:
-			if client == nil {
-				if err := reconnect(); err != nil {
-					continue
-				}
-			}
-
-			device, err := client.Device(WGInterface)
+			device, err := wgExecutor.GetDevice(WGInterface)
 			if err != nil {
-				logger.Printf("获取设备信息失败: %v，尝试重连", err)
-				reconnect()
+				logger.Printf("获取设备信息失败: %v", err)
 				continue
 			}
 
@@ -599,40 +559,15 @@ func startPinger(ctx context.Context) {
 	}
 }
 
-// pingHost 对指定 IP 执行单次 Ping。
-// 性能修复：解析 ping 输出获取真实 RTT，而非依赖进程总耗时（含进程启动开销）
+// pingHost 对指定 IP 执行单次 Ping，通过 wgExecutor 统一探测
 func pingHost(ip string) int64 {
-	var cmd *exec.Cmd
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
 
-	if runtime.GOOS == "windows" {
-		cmd = exec.Command("ping", "-n", "1", "-w", "1000", ip)
-	} else {
-		cmd = exec.Command("ping", "-c", "1", "-W", "1", ip)
+	res, err := wgExecutor.Ping(ctx, ip, 1)
+	if err == nil && res != nil && res.IsAlive && res.PacketsReceived > 0 {
+		return int64(res.AvgRtt)
 	}
-
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return 0
-	}
-
-	outStr := string(out)
-
-	if runtime.GOOS == "windows" {
-		// 解析 Windows ping 输出获取平均 RTT
-		r := &PingResponse{}
-		parseWindowsPing(r, outStr)
-		if r.PacketsReceived > 0 {
-			return int64(r.AvgRtt)
-		}
-	} else {
-		// 解析 Linux ping 输出获取平均 RTT
-		r := &PingResponse{}
-		parseLinuxPing(r, outStr)
-		if r.PacketsReceived > 0 {
-			return int64(r.AvgRtt)
-		}
-	}
-
 	return 0
 }
 

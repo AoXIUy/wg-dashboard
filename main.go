@@ -1,9 +1,8 @@
-﻿package main
+package main
 
 import (
 	"context"
 	_ "embed"
-	"os"
 	"sync"
 )
 
@@ -18,9 +17,8 @@ func main() {
 	// 解析命令行参数与环境变量
 	parseFlags()
 
-	if os.Geteuid() != 0 {
-		logger.Println("警告: 未以 Root 权限运行，无法管理 WireGuard 配置，仅能监控。")
-	}
+	// 初始化 WireGuard 执行抽象层（安全红线：支持 Mock 沙盒隔离与宿主机防护）
+	InitExecutor()
 
 	// 初始化各组件
 	initGeoIP()

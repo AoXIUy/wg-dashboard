@@ -1,3 +1,10 @@
 GeoLite2-ASN.mmdb
 GeoLite2-Country.mmdb
 GeoLite2-City.mmdb
+.sandbox_data/
+*.log
+*.db
+*.db-journal
+*.db-wal
+wg-dashboard.exe
+wg-dashboard

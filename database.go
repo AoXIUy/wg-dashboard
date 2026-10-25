@@ -257,9 +257,9 @@ var failedEntries []ProcessedLog
 	return nil
 }
 
-// backupToFile 将写库失败的记录以 JSON 格式备份到本地文件
+// backupToFile 将写库失败的记录以 JSON 格式备份到本地沙盒目录
 func backupToFile(batch []ProcessedLog) {
-	backupDir := "/var/log/wg-monitor"
+	backupDir := SandboxBackupsDir
 	if err := os.MkdirAll(backupDir, 0755); err != nil {
 		logger.Printf("创建备份目录失败: %v", err)
 		return

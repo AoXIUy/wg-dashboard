@@ -1,38 +1,27 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
 	"fmt"
 	"net"
 	"net/http"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"golang.zx2c4.com/wireguard/wgctrl"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
 // ================= 配置管理 API =================
 
-// listConfigFiles 列出 /etc/wireguard/ 下所有 .conf 文件名
+// listConfigFiles 列出当前配置目录下所有 .conf 文件名
 func listConfigFiles(c *gin.Context) {
-	files, err := filepath.Glob("/etc/wireguard/*.conf")
+	configs, err := wgExecutor.ListConfigs()
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "无法扫描配置目录"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "无法扫描配置目录: " + err.Error()})
 		return
-	}
-
-	var configs []string
-	for _, f := range files {
-		base := filepath.Base(f)
-		configs = append(configs, base[:len(base)-len(filepath.Ext(base))])
 	}
 
 	c.JSON(http.StatusOK, gin.H{"configs": configs})
@@ -64,14 +53,7 @@ func addPeer(c *gin.Context) {
 		return
 	}
 
-	client, err := wgctrl.New()
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "无法连接 WG 控制器"})
-		return
-	}
-	defer client.Close()
-
-	device, err := client.Device(req.ConfigFile)
+	device, err := wgExecutor.GetDevice(req.ConfigFile)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "无法获取接口信息: " + req.ConfigFile})
 		return
@@ -90,19 +72,12 @@ func addPeer(c *gin.Context) {
 		return
 	}
 
-	confPath := fmt.Sprintf("/etc/wireguard/%s.conf", req.ConfigFile)
-	f, err := os.OpenFile(confPath, os.O_APPEND|os.O_WRONLY, 0600)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "无法打开配置文件(Permission?)"})
-		return
-	}
-	defer f.Close()
-
+	existingData, _ := wgExecutor.ReadConfigFile(req.ConfigFile)
 	peerBlock := fmt.Sprintf("\n# Name: %s\n[Peer]\nPublicKey = %s\nPresharedKey = %s\nAllowedIPs = %s\n",
 		req.Name, pubKey.String(), presharedKey.String(), req.AllowedIPs)
 
-	if _, err := f.WriteString(peerBlock); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "写入配置失败"})
+	if err := wgExecutor.WriteConfigFile(req.ConfigFile, append(existingData, []byte(peerBlock)...)); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "写入配置失败: " + err.Error()})
 		return
 	}
 
@@ -241,16 +216,14 @@ func togglePeer(c *gin.Context) {
 			confName = savedConf
 		}
 
-		confPath := fmt.Sprintf("/etc/wireguard/%s.conf", confName)
-		f, err := os.OpenFile(confPath, os.O_APPEND|os.O_WRONLY, 0600)
+		confBytes, err := wgExecutor.ReadConfigFile(confName)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "无法打开配置文件: " + err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "无法读取配置文件: " + err.Error()})
 			return
 		}
-		_, writeErr := fmt.Fprintln(f, "\n"+peerBlock)
-		f.Close()
-		if writeErr != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "写入配置失败"})
+		newConf := append(confBytes, []byte("\n"+peerBlock+"\n")...)
+		if err := wgExecutor.WriteConfigFile(confName, newConf); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "写入配置失败: " + err.Error()})
 			return
 		}
 
@@ -273,9 +246,7 @@ func togglePeer(c *gin.Context) {
 	}
 
 	// ======== 禁用：提取 peer 块 → 存 DB → 从 conf 移除 → syncconf ========
-	confPath := fmt.Sprintf("/etc/wireguard/%s.conf", confName)
-
-	peerBlock, err := extractPeerBlock(confPath, req.PublicKey)
+	peerBlock, err := extractPeerBlock(confName, req.PublicKey)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "提取 peer 配置失败: " + err.Error()})
 		return
@@ -329,10 +300,9 @@ func suggestIPHandler(c *gin.Context) {
 		return
 	}
 
-	path := fmt.Sprintf("/etc/wireguard/%s.conf", confName)
-	content, err := os.ReadFile(path)
+	content, err := wgExecutor.ReadConfigFile(confName)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "无法读取配置文件"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "无法读取配置文件: " + err.Error()})
 		return
 	}
 
@@ -395,41 +365,14 @@ func suggestIPHandler(c *gin.Context) {
 
 // ================= WireGuard 配置文件操作 =================
 
-// reloadWireGuard 使用 wg-quick strip + wg syncconf 热重载指定接口
+// reloadWireGuard 使用 wgExecutor 热重载指定接口
 func reloadWireGuard(confName string) error {
-	wgQuickPath := "/usr/bin/wg-quick"
-	wgPath := "/usr/bin/wg"
-
-	if _, err := os.Stat(wgQuickPath); os.IsNotExist(err) {
-		wgQuickPath = "wg-quick"
-	}
-	if _, err := os.Stat(wgPath); os.IsNotExist(err) {
-		wgPath = "wg"
-	}
-
-	cmdStrip := exec.Command(wgQuickPath, "strip", "/etc/wireguard/"+confName+".conf")
-	configData, err := cmdStrip.Output()
-	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			return fmt.Errorf("strip failed: %v, stderr: %s", err, string(exitErr.Stderr))
-		}
-		return fmt.Errorf("strip failed: %v", err)
-	}
-
-	cmdSync := exec.Command(wgPath, "syncconf", confName, "/dev/stdin")
-	cmdSync.Stdin = bytes.NewReader(configData)
-
-	if output, err := cmdSync.CombinedOutput(); err != nil {
-		return fmt.Errorf("syncconf failed: %v, output: %s", err, string(output))
-	}
-
-	logger.Printf("WireGuard (%s) 热重载成功", confName)
-	return nil
+	return wgExecutor.ReloadWireGuard(confName)
 }
 
 // extractPeerBlock 从 wg conf 文件中提取指定 Peer 的完整配置块（含 # Name: 注释）
-func extractPeerBlock(confPath, pubKey string) (string, error) {
-	content, err := os.ReadFile(confPath)
+func extractPeerBlock(confName, pubKey string) (string, error) {
+	content, err := wgExecutor.ReadConfigFile(confName)
 	if err != nil {
 		return "", fmt.Errorf("读取配置文件失败: %w", err)
 	}
@@ -491,8 +434,7 @@ func extractPeerBlock(confPath, pubKey string) (string, error) {
 
 // modifyConfigFile 对配置文件执行指定操作（目前仅支持 "remove"）
 func modifyConfigFile(confName, targetPubKey, action string) error {
-	path := "/etc/wireguard/" + confName + ".conf"
-	content, err := os.ReadFile(path)
+	content, err := wgExecutor.ReadConfigFile(confName)
 	if err != nil {
 		return fmt.Errorf("读取配置文件失败: %w", err)
 	}
@@ -542,15 +484,5 @@ func modifyConfigFile(confName, targetPubKey, action string) error {
 	}
 
 	output := strings.Join(newLines, "\n")
-
-	// 原子性修复：先写临时文件，再 Rename，防止崩溃导致配置损坏
-	tmpPath := path + ".tmp"
-	if err := os.WriteFile(tmpPath, []byte(output), 0600); err != nil {
-		return fmt.Errorf("写入临时配置文件失败: %w", err)
-	}
-	if err := os.Rename(tmpPath, path); err != nil {
-		_ = os.Remove(tmpPath) // 清理临时文件
-		return fmt.Errorf("原子替换配置文件失败: %w", err)
-	}
-	return nil
+	return wgExecutor.WriteConfigFile(confName, []byte(output))
 }

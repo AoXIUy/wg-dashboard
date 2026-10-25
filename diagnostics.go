@@ -4,9 +4,7 @@ import (
 	"context"
 	"net"
 	"net/http"
-	"os/exec"
 	"regexp"
-	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -56,8 +54,8 @@ func pingHandler(c *gin.Context) {
 	}
 	countStr := c.Query("count")
 	count := 4
-	if c, err := strconv.Atoi(countStr); err == nil && c > 0 && c <= 20 {
-		count = c
+	if cnt, err := strconv.Atoi(countStr); err == nil && cnt > 0 && cnt <= 20 {
+		count = cnt
 	}
 
 	ip := net.ParseIP(ipStr)
@@ -66,36 +64,13 @@ func pingHandler(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(count+2)*time.Second)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), time.Duration(count+2)*time.Second)
 	defer cancel()
 
-	var cmd *exec.Cmd
-	if runtime.GOOS == "windows" {
-		cmd = exec.CommandContext(ctx, "ping", "-n", strconv.Itoa(count), ipStr)
-	} else {
-		// 检测 IPv6，Linux 需要 ping -6 才能正确 ping IPv6 地址
-		if ip.To4() == nil {
-			cmd = exec.CommandContext(ctx, "ping", "-6", "-c", strconv.Itoa(count), "-W", "1", ipStr)
-		} else {
-			cmd = exec.CommandContext(ctx, "ping", "-c", strconv.Itoa(count), "-W", "1", ipStr)
-		}
-	}
-
-	out, _ := cmd.CombinedOutput()
-	outStr := string(out)
-
-	res := PingResponse{
-		Address: ipStr,
-	}
-
-	if runtime.GOOS == "windows" {
-		parseWindowsPing(&res, outStr)
-	} else {
-		parseLinuxPing(&res, outStr)
-	}
-
-	if res.PacketsReceived > 0 {
-		res.IsAlive = true
+	res, err := wgExecutor.Ping(ctx, ipStr, count)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Ping failed: " + err.Error()})
+		return
 	}
 
 	// 补充 GeoIP 信息
@@ -170,39 +145,13 @@ func tracerouteHandler(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 60*time.Second)
 	defer cancel()
 
-	var cmd *exec.Cmd
-	var outStr string
-
-	res := TracerouteResponse{
-		Target: ipStr,
-		Hops:   make([]TracerouteHop, 0),
-	}
-
-	if runtime.GOOS == "windows" {
-		cmd = exec.CommandContext(ctx, "tracert", "-d", "-h", "30", "-w", "1000", ipStr)
-		out, _ := cmd.CombinedOutput()
-		outStr = string(out)
-		parseWindowsTracert(&res, outStr)
-	} else {
-		// 优先尝试 ICMP 模式（-I），避免 UDP raw socket 权限问题
-		// 若系统安装的是 traceroute-nanog 或有 setuid，则 -I 一般能直接使用
-		cmd = exec.CommandContext(ctx, "traceroute", "-n", "-I", "-w", "1", "-m", "30", "-q", "3", ipStr)
-		out, err := cmd.CombinedOutput()
-		outStr = string(out)
-
-		// 如果 ICMP 模式报错（如不支持 -I 或权限不足），回退到 UDP 模式
-		if err != nil && len(out) < 10 {
-			cmd2 := exec.CommandContext(ctx, "traceroute", "-n", "-w", "1", "-m", "30", "-q", "3", ipStr)
-			out2, _ := cmd2.CombinedOutput()
-			if len(out2) > len(out) {
-				outStr = string(out2)
-			}
-		}
-		res.RawOutput = outStr
-		parseLinuxTraceroute(&res, outStr)
+	res, err := wgExecutor.Traceroute(ctx, ipStr, 30)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Traceroute failed: " + err.Error()})
+		return
 	}
 
 	if ipProvider != nil {

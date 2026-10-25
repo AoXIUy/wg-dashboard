@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"golang.zx2c4.com/wireguard/wgctrl"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
@@ -448,20 +447,13 @@ func generateAnalysisReport(ctx context.Context, days int) (*AnalysisReport, err
 
 	// 获取实时 WireGuard 设备状态
 	var livePeers map[string]wgtypes.Peer
-	client, err := wgctrl.New()
-	if err == nil {
-		defer client.Close()
-		device, err := client.Device(WGInterface)
-		if err == nil {
-			livePeers = make(map[string]wgtypes.Peer)
-			for _, p := range device.Peers {
-				livePeers[p.PublicKey.String()] = p
-			}
-		} else {
-			logger.Printf("分析引擎: 无法获取接口 %s 信息: %v", WGInterface, err)
+	if device, err := wgExecutor.GetDevice(WGInterface); err == nil {
+		livePeers = make(map[string]wgtypes.Peer)
+		for _, p := range device.Peers {
+			livePeers[p.PublicKey.String()] = p
 		}
 	} else {
-		logger.Printf("分析引擎: 无法连接 WG 控制器: %v", err)
+		logger.Printf("分析引擎: 无法获取接口 %s 信息: %v", WGInterface, err)
 	}
 
 	q := `
