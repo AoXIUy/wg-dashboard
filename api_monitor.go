@@ -368,7 +368,7 @@ func setAlias(c *gin.Context) {
 	_, err := db.ExecContext(ctx, `
 		INSERT INTO peer_aliases (public_key, alias) 
 		VALUES (?, ?) 
-		ON DUPLICATE KEY UPDATE alias = VALUES(alias)
+		ON CONFLICT(public_key) DO UPDATE SET alias = excluded.alias
 	`, req.PublicKey, req.Alias)
 
 	if err != nil {

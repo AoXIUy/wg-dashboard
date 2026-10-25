@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"time"
 )
 
@@ -136,36 +137,53 @@ type PeerBaseline struct {
 	StdDevMB float64 `json:"stddev_mb"`
 }
 
-// precomputePeerBaselines 计算过去 24小时 所有 Peer 的流量均值与方差（基线）并存入 Redis
+// precomputePeerBaselines 计算过去 24小时 所有 Peer 的流量均值与方差（基线）并存入内存缓存
 func precomputePeerBaselines(ctx context.Context) {
 	logger.Println("开始预计算 Peer 流量基线...")
 
-	// 仅对过去 1 天的数据进行聚合，利用 MySQL 内置函数计算
+	oneDayAgo := time.Now().Add(-24 * time.Hour).Unix()
 	query := `
 		SELECT 
 			peer_public_key,
-			AVG((rx_bytes + tx_bytes) / 1048576) AS mean_mb,
-			STDDEV((rx_bytes + tx_bytes) / 1048576) AS stddev_mb
+			(rx_bytes + tx_bytes) / 1048576.0 AS mb
 		FROM traffic_history
-		WHERE timestamp > UNIX_TIMESTAMP(NOW() - INTERVAL 1 DAY)
-		GROUP BY peer_public_key`
+		WHERE timestamp > ?`
 
-	rows, err := db.QueryContext(ctx, query)
+	rows, err := db.QueryContext(ctx, query, oneDayAgo)
 	if err != nil {
 		logger.Printf("预计算 Peer 基线查询失败: %v", err)
 		return
 	}
 	defer rows.Close()
 
-	baselines := make(map[string]PeerBaseline)
-
+	peerSamples := make(map[string][]float64)
 	for rows.Next() {
 		var pk string
-		var mean, stddev float64
-		if err := rows.Scan(&pk, &mean, &stddev); err != nil {
-			logger.Printf("扫描 Peer 基线行失败: %v", err)
+		var mb float64
+		if err := rows.Scan(&pk, &mb); err != nil {
 			continue
 		}
+		peerSamples[pk] = append(peerSamples[pk], mb)
+	}
+
+	baselines := make(map[string]PeerBaseline)
+	for pk, samples := range peerSamples {
+		n := float64(len(samples))
+		if n == 0 {
+			continue
+		}
+		var sum float64
+		for _, v := range samples {
+			sum += v
+		}
+		mean := sum / n
+
+		var varSum float64
+		for _, v := range samples {
+			d := v - mean
+			varSum += d * d
+		}
+		stddev := math.Sqrt(varSum / n)
 		baselines[pk] = PeerBaseline{
 			MeanMB:   mean,
 			StdDevMB: stddev,
@@ -177,7 +195,7 @@ func precomputePeerBaselines(ctx context.Context) {
 		return
 	}
 
-	// 序列化后写入 Redis
+	// 序列化后写入内存缓存
 	jsonBytes, err := json.Marshal(baselines)
 	if err != nil {
 		logger.Printf("序列化 Peer 基线数据失败: %v", err)

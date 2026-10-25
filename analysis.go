@@ -307,8 +307,8 @@ func (ae *AnalysisEngine) RefinedAnalysis() (OptimalTime, [][]float64, []HourlyT
 	// 使用 rx_rate 和 tx_rate，更直接反映带宽压力
 	query := `
 		SELECT 
-			HOUR(FROM_UNIXTIME(timestamp)) as hour_of_day,
-			DAYOFWEEK(FROM_UNIXTIME(timestamp)) as day_of_week, 
+			CAST(strftime('%H', datetime(timestamp, 'unixepoch', 'localtime')) AS INTEGER) as hour_of_day,
+			CAST(strftime('%w', datetime(timestamp, 'unixepoch', 'localtime')) AS INTEGER) + 1 as day_of_week, 
 			AVG(rx_rate) as avg_rx,
 			AVG(tx_rate) as avg_tx
 		FROM traffic_history

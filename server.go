@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	_ "github.com/go-sql-driver/mysql"
 	"github.com/golang-jwt/jwt/v5"
 	"gopkg.in/natefinch/lumberjack.v2"
 
@@ -377,7 +376,7 @@ func startHTTPServer() *http.Server {
 		logger.Printf("==============================================")
 		logger.Printf("WireGuard Monitor & Manager 启动成功")
 		logger.Printf("接口: %s | 端口: %s", WGInterface, ServerPort)
-		logger.Printf("数据库: MySQL | 缓存引擎: Go 原生内存引擎 (EventBus + In-Memory Cache)")
+		logger.Printf("数据库: SQLite (%s) | 缓存引擎: Go 原生内存引擎", DBPath)
 		logger.Printf("==============================================")
 
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -447,8 +446,8 @@ func setupAPIRoutes(r *gin.Engine) {
 func parseFlags() {
 	flag.StringVar(&WGInterface, "iface", "wg0", "WireGuard 接口名称")
 	flag.StringVar(&ServerPort, "port", ":18080", "Web 监听端口")
-	// 安全修复：移除含明文密码的默认 DSN，强制用户显式提供
-	flag.StringVar(&MySQLDSN, "mysql", "", "MySQL 连接字符串 (必填，格式: user:pass@tcp(host:port)/dbname?charset=utf8mb4&parseTime=True&loc=Local)")
+	flag.StringVar(&DBPath, "db", "", "SQLite 数据库文件路径 (默认: ./.sandbox_data/wg_dashboard.db)")
+	flag.StringVar(&MySQLDSN, "mysql", "", "兼容性参数 (已废弃)")
 	flag.IntVar(&Retention, "days", 30, "数据保留天数")
 	flag.StringVar(&AdminPassword, "password", "", "仪表盘访问密码 (必填，或设置 WG_ADMIN_PASSWORD 环境变量)")
 	flag.StringVar(&JWTSecret, "secret", "", "JWT 签名密钥 (必填，或设置 WG_JWT_SECRET 环境变量)")
@@ -465,14 +464,14 @@ func parseFlags() {
 	if v := os.Getenv("WG_CONFIG_DIR"); v != "" {
 		WGConfigDir = v
 	}
+	if v := os.Getenv("WG_DB_PATH"); v != "" {
+		DBPath = v
+	}
 	if v := os.Getenv("WG_ADMIN_PASSWORD"); v != "" {
 		AdminPassword = v
 	}
 	if v := os.Getenv("WG_JWT_SECRET"); v != "" {
 		JWTSecret = v
-	}
-	if v := os.Getenv("WG_MYSQL_DSN"); v != "" {
-		MySQLDSN = v
 	}
 
 	// 安全校验：拒绝以空凭据或已知弱密钥启动
@@ -492,8 +491,5 @@ func validateSecurityConfig() {
 	}
 	if len(JWTSecret) < 16 {
 		logger.Fatal("[安全] JWT 密钥长度不足 16 位，请使用更长的随机字串")
-	}
-	if MySQLDSN == "" {
-		logger.Fatal("[安全] MySQL DSN 未设置，请通过 -mysql 参数或 WG_MYSQL_DSN 环境变量配置")
 	}
 }

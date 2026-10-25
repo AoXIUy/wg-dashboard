@@ -305,7 +305,7 @@ func processSnapshot(ctx context.Context, snap RawSnapshot, stateMap map[string]
 			go func() {
 				batch := trafficBuffer.Flush()
 				if batch != nil {
-					flushMySQL(batch)
+					flushDB(batch)
 				}
 			}()
 		}

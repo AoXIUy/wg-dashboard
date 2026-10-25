@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"log"
+	"os"
 	"regexp"
 	"sync"
 	"time"
@@ -51,7 +52,7 @@ var (
 	db             *sql.DB
 	configMu       sync.Mutex
 	publicKeyRegex = regexp.MustCompile(`^[A-Za-z0-9+/]{43}=$`)
-	logger         *log.Logger
+	logger         = log.New(os.Stdout, "[WG-Monitor] ", log.LstdFlags|log.Lshortfile)
 	ipProvider     ipapi.Provider
 	sseBroker      *SSEBroker
 	aliasCache     *AliasCache
