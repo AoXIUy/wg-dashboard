@@ -346,9 +346,10 @@
                             <div
                                 class="flex items-center gap-2 text-[11px] text-slate-500 dark:text-slate-400 font-mono mt-0.5">
                                 <span
-                                    :class="['w-1.5 h-1.5 rounded-full transition-colors duration-500', isConnected ? 'bg-emerald-500 status-pulse' : 'bg-red-500']"></span>
+                                    :class="['w-1.5 h-1.5 rounded-full transition-colors duration-500', isConnected ? 'bg-emerald-500 status-pulse' : (isReconnecting ? 'bg-amber-500 animate-ping' : 'bg-red-500')]"></span>
                                 {{ meta.interface }}:{{ meta.port }}
-                                <span v-if="!isConnected" class="text-red-500 ml-1 animate-pulse">(连接中断)</span>
+                                <span v-if="!isConnected && isReconnecting" class="text-amber-500 ml-1">({{ reconnectMsg }})</span>
+                                <span v-else-if="!isConnected" class="text-red-500 ml-1 animate-pulse">(连接中断)</span>
                             </div>
                         </div>
                     </div>
@@ -1705,6 +1706,11 @@
                 const toasts = ref([]);
                 const isDark = ref(false);
                 const isConnected = ref(false);
+                const isReconnecting = ref(false);
+                const reconnectMsg = ref('');
+                let reconnectTimer = null;
+                let reconnectDelay = 1000;
+                const maxReconnectDelay = 15000;
 
                 const sortKey = ref('rate');
                 const sortDesc = ref(true);
@@ -1931,13 +1937,17 @@
                     const textColor = isDark.value ? '#94a3b8' : '#64748b';
                     const gridColor = isDark.value ? 'rgba(255,255,255,0.03)' : 'rgba(0,0,0,0.03)';
                     [mainChartInst, detailChartInst, pieChart, barChart].forEach(chart => {
-                        if (chart) {
-                            if (chart.options.scales.x) chart.options.scales.x.ticks.color = textColor;
-                            if (chart.options.scales.y) {
-                                chart.options.scales.y.ticks.color = textColor;
-                                chart.options.scales.y.grid.color = gridColor;
+                        if (chart && chart.options) {
+                            if (chart.options.scales && chart.options.scales.x && chart.options.scales.x.ticks) {
+                                chart.options.scales.x.ticks.color = textColor;
                             }
-                            chart.options.plugins.tooltip.titleColor = '#fff';
+                            if (chart.options.scales && chart.options.scales.y) {
+                                if (chart.options.scales.y.ticks) chart.options.scales.y.ticks.color = textColor;
+                                if (chart.options.scales.y.grid) chart.options.scales.y.grid.color = gridColor;
+                            }
+                            if (chart.options.plugins && chart.options.plugins.tooltip) {
+                                chart.options.plugins.tooltip.titleColor = '#fff';
+                            }
                             chart.update('none');
                         }
                     });
@@ -1962,16 +1972,32 @@
                 };
 
                 const logout = () => {
-                    if (es.value) es.value.close();
+                    if (reconnectTimer) {
+                        clearTimeout(reconnectTimer);
+                        reconnectTimer = null;
+                    }
+                    if (es.value) {
+                        es.value.close();
+                        es.value = null;
+                    }
                     token.value = '';
                     localStorage.removeItem('wg_token');
                     isConnected.value = false;
+                    isReconnecting.value = false;
+                    reconnectMsg.value = '';
                     mainChartInst?.destroy(); mainChartInst = null;
                 };
 
                 // --- SSE 核心逻辑 ---
                 const initSSE = () => {
-                    if (es.value) es.value.close();
+                    if (reconnectTimer) {
+                        clearTimeout(reconnectTimer);
+                        reconnectTimer = null;
+                    }
+                    if (es.value) {
+                        es.value.close();
+                        es.value = null;
+                    }
                     if (!token.value) return;
 
                     // 使用 token 参数连接 SSE
@@ -1980,6 +2006,9 @@
                     es.value.onopen = () => {
                         console.log("SSE Connected");
                         isConnected.value = true;
+                        isReconnecting.value = false;
+                        reconnectMsg.value = '';
+                        reconnectDelay = 1000;
                         loginError.value = '';
                     };
 
@@ -2021,12 +2050,24 @@
                     es.value.onerror = (err) => {
                         console.error("SSE Error", err);
                         isConnected.value = false;
-                        es.value.close();
-                        // 3秒重连
-                        if (autoRefresh.value) {
-                            setTimeout(() => {
-                                if (token.value) initSSE();
-                            }, 3000);
+                        if (es.value) {
+                            es.value.close();
+                            es.value = null;
+                        }
+                        // 指数退避智能重连
+                        if (autoRefresh.value && token.value) {
+                            isReconnecting.value = true;
+                            const nextSec = (reconnectDelay / 1000).toFixed(0);
+                            reconnectMsg.value = `${nextSec}s 后重连...`;
+                            reconnectTimer = setTimeout(() => {
+                                if (token.value && autoRefresh.value) {
+                                    initSSE();
+                                }
+                            }, reconnectDelay);
+                            reconnectDelay = Math.min(Math.round(reconnectDelay * 1.5), maxReconnectDelay);
+                        } else {
+                            isReconnecting.value = false;
+                            reconnectMsg.value = '';
                         }
                     };
                 };
@@ -2034,11 +2075,23 @@
                 const toggleAutoRefresh = () => {
                     autoRefresh.value = !autoRefresh.value;
                     if (autoRefresh.value) {
-                        if (!isConnected.value) initSSE();
+                        if (!isConnected.value) {
+                            reconnectDelay = 1000;
+                            initSSE();
+                        }
                         showToast('实时连接已开启');
                     } else {
-                        if (es.value) es.value.close();
+                        if (reconnectTimer) {
+                            clearTimeout(reconnectTimer);
+                            reconnectTimer = null;
+                        }
+                        if (es.value) {
+                            es.value.close();
+                            es.value = null;
+                        }
                         isConnected.value = false;
+                        isReconnecting.value = false;
+                        reconnectMsg.value = '';
                         showToast('实时连接已暂停', 'error');
                     }
                 };
@@ -2815,6 +2868,10 @@ PersistentKeepalive = 25
                 });
 
                 onUnmounted(() => {
+                    if (reconnectTimer) {
+                        clearTimeout(reconnectTimer);
+                        reconnectTimer = null;
+                    }
                     if (es.value) es.value.close();
                     [mainChartInst, detailChartInst, pieChart, barChart].forEach(c => c?.destroy());
                     if (networkInstance) networkInstance.destroy();
@@ -2827,7 +2884,7 @@ PersistentKeepalive = 25
                     modalPeer, historyPeriod, changeHistoryPeriod, openDetail, chartLoading,
                     showAnalysis, analysisLoading, openAnalysis, analysisData,
                     editing, tempAlias, editAlias, saveAlias,
-                    toasts, autoRefresh, toggleAutoRefresh, isConnected,
+                    toasts, autoRefresh, toggleAutoRefresh, isConnected, isReconnecting, reconnectMsg,
                     sort, copyText, fmtRate, fmtBytes, getTrafficRatio, formatLastSeen, getHealthClass,
                     isDark, toggleTheme,
                     showAddModal, showConfigModal, availableConfigs, newPeer, generatedConfigStr, ipLoading, isQrUpdating,
