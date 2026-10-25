@@ -35,6 +35,10 @@ func collectSystemInfo() SystemInfo {
 		sys.OS = h.Platform + " " + h.PlatformVersion
 	}
 
+	sys.Version = Version
+	sys.GitCommit = GitCommit
+	sys.BuildDate = BuildDate
+
 	if temps, err := host.SensorsTemperatures(); err == nil {
 		for _, t := range temps {
 			if t.Temperature > sys.CPUTemp {

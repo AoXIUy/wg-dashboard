@@ -64,6 +64,9 @@ type SystemInfo struct {
 	Uptime     uint64  `json:"uptime"`
 	HostName   string  `json:"hostname"`
 	OS         string  `json:"os"`
+	Version    string  `json:"version"`
+	GitCommit  string  `json:"git_commit"`
+	BuildDate  string  `json:"build_date"`
 }
 
 // ================= 鉴权结构 =================

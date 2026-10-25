@@ -356,6 +356,10 @@ process_gc_cycles_total %d
 # HELP wg_eventbus_subscribers Number of active EventBus broadcast subscribers
 # TYPE wg_eventbus_subscribers gauge
 wg_eventbus_subscribers %d
+
+# HELP wg_dashboard_build_info WireGuard Pro Dashboard build and version information
+# TYPE wg_dashboard_build_info gauge
+wg_dashboard_build_info{version="%s",commit="%s",build_date="%s"} 1
 `,
 		stats["processed"],
 		stats["failed_writes"],
@@ -367,6 +371,9 @@ wg_eventbus_subscribers %d
 		m.Sys,
 		m.NumGC,
 		subCount,
+		Version,
+		GitCommit,
+		BuildDate,
 	)
 
 	c.String(http.StatusOK, output)

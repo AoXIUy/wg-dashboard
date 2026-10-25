@@ -33,6 +33,13 @@ const (
 	BufferMaxSize       = 1000
 )
 
+// ================= 版本与构建元数据 =================
+var (
+	Version   = "v2.0.0"
+	GitCommit = "dev"
+	BuildDate = "unknown"
+)
+
 // ================= 命令行配置变量 =================
 var (
 	WGInterface   string

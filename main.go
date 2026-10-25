@@ -20,6 +20,8 @@ func main() {
 	// 解析命令行参数与环境变量
 	parseFlags()
 
+	logger.Printf("WireGuard Pro Dashboard %s (commit: %s, built: %s)", Version, GitCommit, BuildDate)
+
 	// 初始化 WireGuard 执行抽象层（安全红线：支持 Mock 沙盒隔离与宿主机防护）
 	InitExecutor()
 
