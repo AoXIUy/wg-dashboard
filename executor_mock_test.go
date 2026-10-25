@@ -133,6 +133,9 @@ func TestMockExecutor_PingAndTraceroute(t *testing.T) {
 	if !pingRes.IsAlive || pingRes.PacketsReceived != 2 {
 		t.Errorf("expected alive ping with 2 packets, got: %+v", pingRes)
 	}
+	if pingRes.Jitter <= 0 {
+		t.Errorf("expected positive jitter, got: %f", pingRes.Jitter)
+	}
 
 	// Ping 特殊离线地址
 	pingOffline, err := mock.Ping(ctx, "192.0.2.254", 2)
@@ -141,6 +144,24 @@ func TestMockExecutor_PingAndTraceroute(t *testing.T) {
 	}
 	if pingOffline.IsAlive || pingOffline.PacketLoss != 100.0 {
 		t.Errorf("expected offline ping with 100%% loss, got: %+v", pingOffline)
+	}
+
+	// Ping 丢包模拟地址
+	pingLoss, err := mock.Ping(ctx, "192.0.2.50", 4)
+	if err != nil {
+		t.Fatalf("Ping loss failed: %v", err)
+	}
+	if pingLoss.PacketLoss != 50.0 || pingLoss.PacketsReceived != 2 {
+		t.Errorf("expected 50%% packet loss with 2 received, got: %+v", pingLoss)
+	}
+
+	// 验证 Linux Ping 输出解析中的 Jitter/mdev
+	var parsedLinux PingResponse
+	linuxOutput := `4 packets transmitted, 4 received, 0% packet loss, time 3004ms
+rtt min/avg/max/mdev = 15.200/22.450/30.100/4.250 ms`
+	parseLinuxPing(&parsedLinux, linuxOutput)
+	if parsedLinux.PacketsReceived != 4 || parsedLinux.Jitter != 4.25 {
+		t.Errorf("Linux ping Jitter parse failed, expected 4.25, got: %+v", parsedLinux)
 	}
 
 	// Traceroute

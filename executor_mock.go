@@ -398,7 +398,7 @@ func (m *MockExecutor) Ping(ctx context.Context, ip string, count int) (*PingRes
 		return nil, ctx.Err()
 	}
 
-	// 特殊离线 IP 模拟
+	// 特殊离线与丢包测试 IP 模拟
 	if ip == "192.0.2.254" || ip == "0.0.0.0" {
 		return &PingResponse{
 			Address:         ip,
@@ -408,10 +408,29 @@ func (m *MockExecutor) Ping(ctx context.Context, ip string, count int) (*PingRes
 			PacketLoss:      100.0,
 		}, nil
 	}
+	if ip == "192.0.2.50" {
+		recv := count / 2
+		loss := float64(count-recv) / float64(count) * 100
+		return &PingResponse{
+			Address:         ip,
+			IsAlive:         true,
+			MinRtt:          20.0,
+			AvgRtt:          35.0,
+			MaxRtt:          50.0,
+			Jitter:          15.0,
+			PacketsSent:     count,
+			PacketsReceived: recv,
+			PacketLoss:      loss,
+		}, nil
+	}
 
 	baseRtt := float64(12 + rand.Intn(25))
-	minRtt := baseRtt - float64(rand.Intn(5))
-	maxRtt := baseRtt + float64(rand.Intn(10))
+	jitter := float64(1 + rand.Intn(6))
+	minRtt := baseRtt - jitter/2
+	maxRtt := baseRtt + jitter/2
+	if minRtt < 1 {
+		minRtt = 1
+	}
 
 	return &PingResponse{
 		Address:         ip,
@@ -419,6 +438,7 @@ func (m *MockExecutor) Ping(ctx context.Context, ip string, count int) (*PingRes
 		MinRtt:          minRtt,
 		AvgRtt:          baseRtt,
 		MaxRtt:          maxRtt,
+		Jitter:          jitter,
 		PacketsSent:     count,
 		PacketsReceived: count,
 		PacketLoss:      0.0,

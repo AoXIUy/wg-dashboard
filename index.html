@@ -1302,7 +1302,7 @@
                                         </div>
                                     </div>
 
-                                    <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                                    <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
                                         <div class="glass-card rounded-2xl p-4 bg-slate-50 dark:bg-slate-800/30"
                                             style="animation-delay: 50ms;">
                                             <div class="text-[10px] text-slate-400 font-bold mb-1">平均延迟 (Avg RTT)</div>
@@ -1311,13 +1311,20 @@
                                         </div>
                                         <div class="glass-card rounded-2xl p-4 bg-slate-50 dark:bg-slate-800/30"
                                             style="animation-delay: 100ms;">
-                                            <div class="text-[10px] text-slate-400 font-bold mb-1">最小延迟 (Min RTT)</div>
-                                            <div class="text-xl font-mono font-bold text-emerald-500">{{
+                                            <div class="text-[10px] text-slate-400 font-bold mb-1">极值延迟 (Min/Max)</div>
+                                            <div class="text-sm font-mono font-bold text-emerald-500">{{
                                                 pingResult.min_rtt
-                                                }}<span class="text-sm ml-1 text-slate-500">ms</span></div>
+                                                }}<span class="text-xs text-slate-400">/</span>{{ pingResult.max_rtt }}<span class="text-xs ml-0.5 text-slate-500">ms</span></div>
                                         </div>
                                         <div class="glass-card rounded-2xl p-4 bg-slate-50 dark:bg-slate-800/30"
                                             style="animation-delay: 150ms;">
+                                            <div class="text-[10px] text-slate-400 font-bold mb-1">网络抖动 (Jitter)</div>
+                                            <div class="text-xl font-mono font-bold text-amber-500">{{
+                                                pingResult.jitter != null ? pingResult.jitter : 0
+                                                }}<span class="text-sm ml-1 text-slate-500">ms</span></div>
+                                        </div>
+                                        <div class="glass-card rounded-2xl p-4 bg-slate-50 dark:bg-slate-800/30"
+                                            style="animation-delay: 200ms;">
                                             <div class="text-[10px] text-slate-400 font-bold mb-1">丢包率 (Loss)</div>
                                             <div class="text-xl font-mono font-bold"
                                                 :class="pingResult.packet_loss > 0 ? 'text-red-500' : 'text-emerald-500'">
@@ -1325,7 +1332,7 @@
                                                     class="text-sm ml-1 text-slate-500">%</span></div>
                                         </div>
                                         <div class="glass-card rounded-2xl p-4 bg-slate-50 dark:bg-slate-800/30"
-                                            style="animation-delay: 200ms;">
+                                            style="animation-delay: 250ms;">
                                             <div class="text-[10px] text-slate-400 font-bold mb-1">收发包 (Rx/Tx)</div>
                                             <div class="text-xl font-mono font-bold text-slate-700 dark:text-slate-300">
                                                 {{ pingResult.packets_received }}/{{ pingResult.packets_sent }}</div>

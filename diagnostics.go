@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"math"
 	"net"
 	"net/http"
 	"regexp"
@@ -18,6 +19,7 @@ type PingResponse struct {
 	MinRtt          float64 `json:"min_rtt"`
 	AvgRtt          float64 `json:"avg_rtt"`
 	MaxRtt          float64 `json:"max_rtt"`
+	Jitter          float64 `json:"jitter"`
 	PacketsSent     int     `json:"packets_sent"`
 	PacketsReceived int     `json:"packets_received"`
 	PacketLoss      float64 `json:"packet_loss"`
@@ -96,12 +98,17 @@ func parseLinuxPing(res *PingResponse, out string) {
 		res.PacketLoss, _ = strconv.ParseFloat(matches[3], 64)
 	}
 
-	reRtt := regexp.MustCompile(`(?:rtt|round-trip)\s+min/avg/max.*?=\s+([\d\.]+)/([\d\.]+)/([\d\.]+)`)
+	reRtt := regexp.MustCompile(`(?:rtt|round-trip)\s+min/avg/max(?:/(?:mdev|stddev))?.*?=\s+([\d\.]+)/([\d\.]+)/([\d\.]+)(?:/([\d\.]+))?`)
 	mRtt := reRtt.FindStringSubmatch(out)
-	if len(mRtt) == 4 {
+	if len(mRtt) >= 4 {
 		res.MinRtt, _ = strconv.ParseFloat(mRtt[1], 64)
 		res.AvgRtt, _ = strconv.ParseFloat(mRtt[2], 64)
 		res.MaxRtt, _ = strconv.ParseFloat(mRtt[3], 64)
+		if len(mRtt) == 5 && mRtt[4] != "" {
+			res.Jitter, _ = strconv.ParseFloat(mRtt[4], 64)
+		} else if res.MaxRtt >= res.MinRtt {
+			res.Jitter = math.Round((res.MaxRtt-res.MinRtt)*100) / 100
+		}
 	}
 }
 
@@ -129,6 +136,9 @@ func parseWindowsPing(res *PingResponse, out string) {
 	}
 	if m := reRttAvg.FindStringSubmatch(out); len(m) == 2 {
 		res.AvgRtt, _ = strconv.ParseFloat(m[1], 64)
+	}
+	if res.MaxRtt >= res.MinRtt {
+		res.Jitter = math.Round((res.MaxRtt-res.MinRtt)*100) / 100
 	}
 }
 
