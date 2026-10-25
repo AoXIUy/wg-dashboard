@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -132,6 +133,10 @@ func startBackgroundServices(ctx context.Context, wg *sync.WaitGroup, rawChan ch
 	// 定期预计算分析报告（脱离 Redis，使用纯 Go 内存缓存加速）
 	wg.Add(1)
 	go func() { defer wg.Done(); startAnalysisPrecompute(ctx) }()
+
+	// 定期清理登录限速器过期 IP 记录（防止内存泄漏）
+	wg.Add(1)
+	go func() { defer wg.Done(); loginRateLimiter.StartStaleCleaner(ctx, 5*time.Minute) }()
 }
 
 // startCacheRefresher 定期刷新别名缓存
@@ -294,40 +299,68 @@ func checkAuthHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
-// metricsHandler 输出 Prometheus 格式的监控指标
+// metricsHandler 输出 Prometheus 格式的监控指标，包含自身运行状态和 Goroutine 监控
 func metricsHandler(c *gin.Context) {
 	stats := metrics.GetStats()
+
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+
+	subCount := 0
+	if globalEventBus != nil {
+		subCount = globalEventBus.SubscriberCount("wg:channel:broadcast")
+	}
 
 	output := fmt.Sprintf(`# HELP wg_processed_total Total processed snapshots
 # TYPE wg_processed_total counter
 wg_processed_total %d
 
-# HELP wg_failed_writes_total Failed MySQL writes
+# HELP wg_failed_writes_total Failed database writes
 # TYPE wg_failed_writes_total counter
 wg_failed_writes_total %d
 
-# HELP wg_redis_errors_total Redis operation errors
-# TYPE wg_redis_errors_total counter
-wg_redis_errors_total %d
-
-# HELP wg_cache_hits_total Cache hits
+# HELP wg_cache_hits_total In-memory cache hits
 # TYPE wg_cache_hits_total counter
 wg_cache_hits_total %d
 
-# HELP wg_cache_misses_total Cache misses
+# HELP wg_cache_misses_total In-memory cache misses
 # TYPE wg_cache_misses_total counter
 wg_cache_misses_total %d
 
 # HELP wg_buffer_size Current buffer size
 # TYPE wg_buffer_size gauge
 wg_buffer_size %d
+
+# HELP process_goroutines Number of running goroutines
+# TYPE process_goroutines gauge
+process_goroutines %d
+
+# HELP process_memory_alloc_bytes Memory currently allocated
+# TYPE process_memory_alloc_bytes gauge
+process_memory_alloc_bytes %d
+
+# HELP process_memory_sys_bytes Total system memory obtained
+# TYPE process_memory_sys_bytes gauge
+process_memory_sys_bytes %d
+
+# HELP process_gc_cycles_total Total number of GC cycles
+# TYPE process_gc_cycles_total counter
+process_gc_cycles_total %d
+
+# HELP wg_eventbus_subscribers Number of active EventBus broadcast subscribers
+# TYPE wg_eventbus_subscribers gauge
+wg_eventbus_subscribers %d
 `,
 		stats["processed"],
 		stats["failed_writes"],
-		stats["redis_errors"],
 		stats["cache_hits"],
 		stats["cache_misses"],
 		trafficBuffer.Size(),
+		runtime.NumGoroutine(),
+		m.Alloc,
+		m.Sys,
+		m.NumGC,
+		subCount,
 	)
 
 	c.String(http.StatusOK, output)

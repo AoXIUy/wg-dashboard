@@ -38,6 +38,16 @@ func addPeer(c *gin.Context) {
 		return
 	}
 
+	if len(req.Name) > MaxAliasLength {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "客户端名称过长，最多允许100字符"})
+		return
+	}
+
+	if strings.ContainsAny(req.Name, "\r\n#[]=") {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "客户端名称包含非法字符，禁止包含换行或配置文件保留符号"})
+		return
+	}
+
 	if _, _, err := net.ParseCIDR(req.AllowedIPs); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "IP格式错误，应为CIDR格式 (如 10.0.0.5/32)"})
 		return

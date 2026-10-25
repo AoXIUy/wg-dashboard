@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"net"
 	"sync"
 	"time"
@@ -110,5 +111,35 @@ func (r *rateLimiter) recordSuccess(ip string) {
 	defer r.mu.Unlock()
 	delete(r.attempts, ip)
 }
-// 注意： rateLimitMiddleware 已删除（死代码）。
-// 登录频率限制由 loginHandler 直接调用 loginRateLimiter.isRateLimited() 实现，无需中间件。
+
+// StartStaleCleaner 定期清理长时间无失败记录且未封禁的 IP 条目，防止内存无上限增长
+func (r *rateLimiter) StartStaleCleaner(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			r.mu.Lock()
+			now := time.Now()
+			cutoff := now.Add(-rateLimitWindow)
+			for ip, attempt := range r.attempts {
+				if attempt.bannedUntil.IsZero() || now.After(attempt.bannedUntil) {
+					hasRecent := false
+					for _, t := range attempt.failures {
+						if t.After(cutoff) {
+							hasRecent = true
+							break
+						}
+					}
+					if !hasRecent {
+						delete(r.attempts, ip)
+					}
+				}
+			}
+			r.mu.Unlock()
+		}
+	}
+}
