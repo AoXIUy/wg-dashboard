@@ -2,12 +2,15 @@ package main
 
 import (
 	"context"
-	_ "embed"
+	"embed"
 	"sync"
 )
 
 //go:embed index.html
 var indexHtml string
+
+//go:embed static/*
+var staticFS embed.FS
 
 // main 是程序入口：解析配置、初始化各组件、启动所有后台服务、监听 HTTP 请求
 func main() {

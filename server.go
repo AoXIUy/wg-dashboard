@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
@@ -43,39 +44,29 @@ func initLogger() {
 
 // ================= 初始化辅助 =================
 
-// initGeoIP 根据命令行参数加载 GeoLite2 数据库；任一文件存在即初始化
+// initGeoIP 根据命令行参数加载 GeoLite2 数据库；均不存在时自动优雅降级为内存缓存 + 在线 API 模式
 func initGeoIP() {
-	cityExists := false
-	asnExists := false
+	cityPath := ""
+	asnPath := ""
 
 	if _, err := os.Stat(GeoCityPath); err == nil {
-		cityExists = true
-	} else {
-		logger.Printf("GeoIP City 数据库不存在: %s", GeoCityPath)
+		cityPath = GeoCityPath
+		logger.Printf("GeoIP City 数据库已检测到: %s", GeoCityPath)
 	}
-
 	if _, err := os.Stat(GeoASNPath); err == nil {
-		asnExists = true
-	} else {
-		logger.Printf("GeoIP ASN 数据库不存在: %s", GeoASNPath)
+		asnPath = GeoASNPath
+		logger.Printf("GeoIP ASN 数据库已检测到: %s", GeoASNPath)
 	}
 
-	if cityExists || asnExists {
-		cityPath := ""
-		asnPath := ""
-		if cityExists {
-			cityPath = GeoCityPath
-		}
-		if asnExists {
-			asnPath = GeoASNPath
-		}
-
-		provider, err := ipapi.NewGeoLite2Provider(cityPath, asnPath, true) // 启用外部 API 回退
-		if err != nil {
-			logger.Printf("GeoIP 初始化失败: %v", err)
+	provider, err := ipapi.NewGeoLite2Provider(cityPath, asnPath, true) // 启用外部 API 回退
+	if err != nil {
+		logger.Printf("GeoIP 初始化遇到异常: %v", err)
+	} else {
+		ipProvider = provider
+		if cityPath == "" && asnPath == "" {
+			logger.Println("未检测到本地 GeoLite2 数据库，已自动优雅降级为在线 API 查询 + 进程内存缓存模式")
 		} else {
-			ipProvider = provider
-			logger.Println("GeoIP 数据库已加载")
+			logger.Println("GeoIP 数据库与外部 API 回退已就绪")
 		}
 	}
 }
@@ -351,7 +342,12 @@ func startHTTPServer() *http.Server {
 	r.Use(gin.Recovery())
 	r.Use(corsMiddleware())
 
-	r.Static("/static", "./static")
+	// 静态资源：优先使用嵌入式单二进制文件系统 (//go:embed)，不存在时回退到本地目录
+	if subFS, err := fs.Sub(staticFS, "static"); err == nil {
+		r.StaticFS("/static", http.FS(subFS))
+	} else {
+		r.Static("/static", "./static")
+	}
 
 	r.GET("/", func(c *gin.Context) {
 		c.Header("Content-Type", "text/html; charset=utf-8")
@@ -359,7 +355,11 @@ func startHTTPServer() *http.Server {
 	})
 
 	r.GET("/favicon.ico", func(c *gin.Context) {
-		c.File("./static/favicon.ico")
+		if _, err := os.Stat("./static/favicon.ico"); err == nil {
+			c.File("./static/favicon.ico")
+		} else {
+			c.Status(http.StatusNoContent)
+		}
 	})
 
 	setupAPIRoutes(r)
