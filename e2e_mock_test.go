@@ -245,6 +245,9 @@ func TestE2E_FullMockWorkflow(t *testing.T) {
 		if !res.IsAlive {
 			t.Errorf("expected alive ping in mock mode, got %+v", res)
 		}
+		if res.Jitter <= 0 {
+			t.Errorf("expected positive jitter in mock ping, got %+v", res)
+		}
 	})
 
 	// 10. 测试 GET /api/traceroute/execute
@@ -282,6 +285,9 @@ func TestE2E_FullMockWorkflow(t *testing.T) {
 		if !strings.Contains(string(body), "wg_processed_total") {
 			t.Errorf("expected Prometheus metric wg_processed_total, got:\n%s", string(body))
 		}
+		if !strings.Contains(string(body), "wg_dashboard_build_info") {
+			t.Errorf("expected Prometheus metric wg_dashboard_build_info, got:\n%s", string(body))
+		}
 	})
 
 	// 12. 测试 GET /api/analysis
@@ -295,6 +301,66 @@ func TestE2E_FullMockWorkflow(t *testing.T) {
 		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
 			t.Errorf("expected 200, got %d", resp.StatusCode)
+		}
+	})
+
+	// 13. 测试 GET /api/backup/stats
+	t.Run("GET /api/backup/stats", func(t *testing.T) {
+		req, _ := http.NewRequest("GET", serverURL+"/api/backup/stats", nil)
+		req.Header.Set("Authorization", authHeader)
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("backup stats failed: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("expected 200, got %d", resp.StatusCode)
+		}
+		var st DatabaseStats
+		if err := json.NewDecoder(resp.Body).Decode(&st); err != nil {
+			t.Errorf("failed to decode stats: %v", err)
+		}
+	})
+
+	// 14. 测试 GET /api/backup/export
+	t.Run("GET /api/backup/export", func(t *testing.T) {
+		req, _ := http.NewRequest("GET", serverURL+"/api/backup/export", nil)
+		req.Header.Set("Authorization", authHeader)
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("backup export failed: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("expected 200, got %d", resp.StatusCode)
+		}
+		var bk BackupData
+		if err := json.NewDecoder(resp.Body).Decode(&bk); err != nil {
+			t.Errorf("failed to decode backup: %v", err)
+		}
+		if bk.Version != "1.0" {
+			t.Errorf("expected version 1.0, got %s", bk.Version)
+		}
+	})
+
+	// 15. 测试 GET /api/system (包含版本元数据)
+	t.Run("GET /api/system", func(t *testing.T) {
+		req, _ := http.NewRequest("GET", serverURL+"/api/system", nil)
+		req.Header.Set("Authorization", authHeader)
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("system request failed: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("expected 200, got %d", resp.StatusCode)
+		}
+		var sys SystemInfo
+		if err := json.NewDecoder(resp.Body).Decode(&sys); err != nil {
+			t.Errorf("failed to decode system info: %v", err)
+		}
+		if sys.Version != Version {
+			t.Errorf("expected version %s, got %s", Version, sys.Version)
 		}
 	})
 }
