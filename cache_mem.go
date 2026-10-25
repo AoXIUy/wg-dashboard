@@ -76,17 +76,14 @@ func (c *MemoryCache) cleanExpired() {
 // Get 获取字符串缓存
 func (c *MemoryCache) Get(key string) (string, bool) {
 	c.mu.RLock()
-	entry, ok := c.items[key]
-	c.mu.RUnlock()
+	defer c.mu.RUnlock()
 
+	entry, ok := c.items[key]
 	if !ok {
 		return "", false
 	}
 
 	if entry.isExpired(time.Now()) {
-		c.mu.Lock()
-		delete(c.items, key)
-		c.mu.Unlock()
 		return "", false
 	}
 
@@ -103,7 +100,7 @@ func (c *MemoryCache) Set(key string, val string, ttl time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// 简单的容量控制：若超限则随机或按顺序清理若干条
+	// 简单的容量控制：若超限则清理部分条目
 	if len(c.items) >= c.maxSize {
 		count := 0
 		for k := range c.items {
@@ -122,7 +119,7 @@ func (c *MemoryCache) Set(key string, val string, ttl time.Duration) {
 	}
 }
 
-// HSet 设置 Hash 结构缓存（兼容原 Redis HSet）
+// HSet 设置 Hash 结构缓存（并发安全写时复制）
 func (c *MemoryCache) HSet(key string, fields map[string]interface{}, ttl time.Duration) {
 	strFields := make(map[string]string, len(fields))
 	for k, v := range fields {
@@ -147,10 +144,15 @@ func (c *MemoryCache) HSet(key string, fields map[string]interface{}, ttl time.D
 		return
 	}
 
-	// 合并已有 fields
-	for k, v := range strFields {
-		entry.hashVal[k] = v
+	// 复制并合并已有 fields，确保并发读取时绝对安全
+	newMap := make(map[string]string, len(entry.hashVal)+len(strFields))
+	for k, v := range entry.hashVal {
+		newMap[k] = v
 	}
+	for k, v := range strFields {
+		newMap[k] = v
+	}
+	entry.hashVal = newMap
 	if ttl > 0 {
 		entry.expiresAt = exp
 	}
@@ -159,17 +161,14 @@ func (c *MemoryCache) HSet(key string, fields map[string]interface{}, ttl time.D
 // HGet 获取 Hash 中指定字段的值
 func (c *MemoryCache) HGet(key string, field string) (string, bool) {
 	c.mu.RLock()
-	entry, ok := c.items[key]
-	c.mu.RUnlock()
+	defer c.mu.RUnlock()
 
+	entry, ok := c.items[key]
 	if !ok || !entry.isHash {
 		return "", false
 	}
 
 	if entry.isExpired(time.Now()) {
-		c.mu.Lock()
-		delete(c.items, key)
-		c.mu.Unlock()
 		return "", false
 	}
 
@@ -180,17 +179,14 @@ func (c *MemoryCache) HGet(key string, field string) (string, bool) {
 // HGetAll 获取 Hash 中全部字段
 func (c *MemoryCache) HGetAll(key string) (map[string]string, bool) {
 	c.mu.RLock()
-	entry, ok := c.items[key]
-	c.mu.RUnlock()
+	defer c.mu.RUnlock()
 
+	entry, ok := c.items[key]
 	if !ok || !entry.isHash {
 		return nil, false
 	}
 
 	if entry.isExpired(time.Now()) {
-		c.mu.Lock()
-		delete(c.items, key)
-		c.mu.Unlock()
 		return nil, false
 	}
 
