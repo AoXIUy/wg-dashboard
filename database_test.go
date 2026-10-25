@@ -121,4 +121,29 @@ func TestDatabase_BatchFlushAndArchive(t *testing.T) {
 	if archiveCount == 0 {
 		t.Errorf("expected archived records in traffic_hourly, got %d", archiveCount)
 	}
+
+	// 验证 UNION ALL 联合查询能否同时无缝检索归档与最新流量
+	unionQuery := `
+		SELECT timestamp, rx_rate, tx_rate 
+		FROM traffic_history 
+		WHERE peer_public_key = ? AND timestamp >= ? 
+		UNION ALL
+		SELECT timestamp, rx_rate, tx_rate 
+		FROM traffic_hourly 
+		WHERE peer_public_key = ? AND timestamp >= ? 
+		ORDER BY timestamp ASC
+	`
+	rows, err := db.Query(unionQuery, "test_pk_old", now-7*86400, "test_pk_old", now-7*86400)
+	if err != nil {
+		t.Fatalf("UNION ALL query failed: %v", err)
+	}
+	defer rows.Close()
+
+	totalCombined := 0
+	for rows.Next() {
+		totalCombined++
+	}
+	if totalCombined == 0 {
+		t.Errorf("expected union query to return records, got 0")
+	}
 }

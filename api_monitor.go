@@ -30,6 +30,8 @@ func getRangeParams(period string) (int64, int64) {
 		duration, step = 86400, 600
 	case "7d":
 		duration, step = 604800, 3600
+	case "30d":
+		duration, step = 2592000, 14400
 	default:
 		duration, step = 1800, 10
 	}
@@ -86,8 +88,12 @@ func getPeerHistory(c *gin.Context) {
 		SELECT timestamp, rx_rate, tx_rate 
 		FROM traffic_history 
 		WHERE peer_public_key = ? AND timestamp >= ? 
+		UNION ALL
+		SELECT timestamp, rx_rate, tx_rate 
+		FROM traffic_hourly 
+		WHERE peer_public_key = ? AND timestamp >= ? 
 		ORDER BY timestamp ASC
-	`, pk, startTime)
+	`, pk, startTime, pk, startTime)
 
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询失败: " + err.Error()})
@@ -294,11 +300,14 @@ func getTrafficChartData(c *gin.Context) {
 
 	rows, err := db.QueryContext(ctx, `
 		SELECT timestamp, SUM(rx_rate), SUM(tx_rate) 
-		FROM traffic_history 
-		WHERE timestamp >= ? 
+		FROM (
+			SELECT timestamp, rx_rate, tx_rate FROM traffic_history WHERE timestamp >= ?
+			UNION ALL
+			SELECT timestamp, rx_rate, tx_rate FROM traffic_hourly WHERE timestamp >= ?
+		) 
 		GROUP BY timestamp 
 		ORDER BY timestamp ASC
-	`, startTime)
+	`, startTime, startTime)
 
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询失败: " + err.Error()})
