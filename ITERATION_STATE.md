@@ -2,11 +2,11 @@
 
 ## Current Status Overview
 - **Active Phase**: Phase 2+ Continuous Autonomous Evolution
-- **Completed Iterations**: 13
+- **Completed Iterations**: 16
 - **Platform**: Windows / Linux (Cross-platform pure Go `CGO_ENABLED=0`)
-- **Single-Binary Build**: Verified (0 CGO, 0 external MySQL, 0 external Redis, 0 required local MMDB files)
+- **Single-Binary Build**: Verified (0 CGO, 0 external MySQL, 0 external Redis, 0 required local MMDB files, ~30MB single executable)
 - **Host Isolation Policy**: `./.sandbox_data/` strictly enforced; NO host network changes; MockExecutor ready for automated validation.
-- **Test Suite Status**: 100% PASS (13 unit/integration tests, E2E Mock HTTP API & SSE tests, Benchmarks)
+- **Test Suite Status**: 100% PASS (15 E2E endpoints, unit tests, race-safe memory cache, and benchmarks)
 
 ---
 
@@ -79,10 +79,21 @@
   - [x] Add `30d` range option with adaptive 4-hour step slots.
   - [x] Optimize `getPeerHistory` and `getTrafficChartData` using `UNION ALL` across `traffic_history` and `traffic_hourly`.
   - [x] Verified seamless cross-table time series retrieval in `database_test.go`.
+- [x] **Iteration 14: Version Stamping, Build Metrics, Makefile, and Cross-Platform Build Scripts**
+  - [x] Add version, git commit hash, and build timestamp injection via `-ldflags`.
+  - [x] Expose `wg_dashboard_build_info` gauge in Prometheus metrics and `/api/system`.
+  - [x] Add `Makefile` for Linux and `build.ps1` for Windows supporting `build`, `linux-amd64`, `linux-arm64`, `test`, `bench`, and `clean`.
+- [x] **Iteration 15: Frontend Interactive Backup/Restore Modal with Storage Stats**
+  - [x] Add "备份" button in frontend action bar.
+  - [x] Add animated modal displaying live database size, alias count, and archived row statistics.
+  - [x] Support one-click JSON backup export and file-upload restore with instant notification toast.
+- [x] **Iteration 16: Comprehensive E2E Regression Verification**
+  - [x] Extend `e2e_mock_test.go` to 15 end-to-end endpoints.
+  - [x] Verified backup stats, backup export, system build info, and network jitter under mock daemon.
 
 ### Backlog for Subsequent Iterations
-- [ ] **Iteration 14**: Automated Cross-Platform Build Automation (`build.ps1` & `Makefile` with version stamping, git commit hash, build date, and pure Go CGO_ENABLED=0 flags).
-- [ ] **Iteration 15**: Peer Config Import/Export UI Button (connect frontend modals to `/api/backup/export` and `/api/backup/import`).
+- [ ] **Iteration 17**: Code Structure Modularization (gradual migration of flat packages to `internal/` packages while preserving single-binary build simplicity).
+- [ ] **Iteration 18**: Config Import Diff Preview (preview diff of peers before applying an imported backup).
 
 ---
 
@@ -101,3 +112,6 @@
 - **Iter 11 (Backup & Restore API)**: Transactional JSON export/import for aliases and configs, plus storage statistics.
 - **Iter 12 (Jitter Diagnostics)**: Network jitter estimation and loss simulation for WireGuard diagnostics.
 - **Iter 13 (Archive Union Optimization)**: Query downsampled hourly archives alongside live history for 7d/30d periods.
+- **Iter 14 (Build Automation & Versioning)**: Version stamping, Makefile, and Windows build.ps1 for multi-arch targets.
+- **Iter 15 (Backup & Restore UI)**: Frontend modal with live database metrics, one-click export, and file upload import.
+- **Iter 16 (E2E Regression)**: Expanded test suite to 15 end-to-end endpoints verifying all new capabilities under sandbox isolation.
