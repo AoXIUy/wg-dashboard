@@ -2,11 +2,11 @@
 
 ## Current Status Overview
 - **Active Phase**: Phase 2+ Continuous Autonomous Evolution
-- **Completed Iterations**: 10
+- **Completed Iterations**: 13
 - **Platform**: Windows / Linux (Cross-platform pure Go `CGO_ENABLED=0`)
 - **Single-Binary Build**: Verified (0 CGO, 0 external MySQL, 0 external Redis, 0 required local MMDB files)
 - **Host Isolation Policy**: `./.sandbox_data/` strictly enforced; NO host network changes; MockExecutor ready for automated validation.
-- **Test Suite Status**: 100% PASS (Unit tests, E2E Mock HTTP API & SSE tests, Benchmarks)
+- **Test Suite Status**: 100% PASS (13 unit/integration tests, E2E Mock HTTP API & SSE tests, Benchmarks)
 
 ---
 
@@ -65,11 +65,24 @@
   - [x] Enable `auto_vacuum(INCREMENTAL)` pragma in SQLite DSN.
   - [x] Add `PRAGMA incremental_vacuum` and `PRAGMA optimize` to periodic maintenance cycle.
   - [x] Checkpoint SQLite WAL (`PRAGMA wal_checkpoint(TRUNCATE)`) and close database cleanly on graceful shutdown.
+- [x] **Iteration 11: Peer Aliases and Configs Backup Export, Import, and Storage Stats API**
+  - [x] Implement `GET /api/backup/export` (downloads JSON backup of aliases & staged configs).
+  - [x] Implement `POST /api/backup/import` (transactional restore with auto alias cache refresh).
+  - [x] Implement `GET /api/backup/stats` (reports table row counts and sandbox directory sizes).
+  - [x] Full unit test suite in `api_backup_test.go`.
+- [x] **Iteration 12: Advanced Diagnostics & Network Jitter Metric**
+  - [x] Add `jitter` field to `PingResponse` in `diagnostics.go`.
+  - [x] Parse Linux ping `mdev` / Windows ping RTT spread.
+  - [x] Add realistic jitter and 50% packet loss simulation in `MockExecutor.Ping`.
+  - [x] Add 5th metric card for Network Jitter in `index.html`.
+- [x] **Iteration 13: High-Density Traffic Downsampling & UNION ALL Long-Range Query Optimization**
+  - [x] Add `30d` range option with adaptive 4-hour step slots.
+  - [x] Optimize `getPeerHistory` and `getTrafficChartData` using `UNION ALL` across `traffic_history` and `traffic_hourly`.
+  - [x] Verified seamless cross-table time series retrieval in `database_test.go`.
 
 ### Backlog for Subsequent Iterations
-- [ ] **Iteration 11**: Automated Config Backup & Export/Import API (allow downloading and restoring encrypted or plain JSON peer configs via REST).
-- [ ] **Iteration 12**: Advanced Peer Diagnostics & Health Metrics (jitter estimation, packet loss simulation in MockExecutor, packet loss display in UI).
-- [ ] **Iteration 13**: High-Density Traffic Downsampling Visualization (adaptive chart downsampling for long-range 7d/30d queries to keep browser smooth).
+- [ ] **Iteration 14**: Automated Cross-Platform Build Automation (`build.ps1` & `Makefile` with version stamping, git commit hash, build date, and pure Go CGO_ENABLED=0 flags).
+- [ ] **Iteration 15**: Peer Config Import/Export UI Button (connect frontend modals to `/api/backup/export` and `/api/backup/import`).
 
 ---
 
@@ -85,3 +98,6 @@
 - **Iter 8 (Security & Observability)**: Process metrics, login rate limiter cleaner, config injection sanitization.
 - **Iter 9 (Frontend SSE & UX)**: Exponential backoff SSE reconnection, UI pill status indicator, Chart.js pie chart theme fix.
 - **Iter 10 (SQLite Maintenance & Shutdown)**: Auto-vacuum pragma, query planner optimization, and WAL checkpoint on graceful shutdown.
+- **Iter 11 (Backup & Restore API)**: Transactional JSON export/import for aliases and configs, plus storage statistics.
+- **Iter 12 (Jitter Diagnostics)**: Network jitter estimation and loss simulation for WireGuard diagnostics.
+- **Iter 13 (Archive Union Optimization)**: Query downsampled hourly archives alongside live history for 7d/30d periods.
