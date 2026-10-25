@@ -74,14 +74,10 @@ type AdvancedReport struct {
 func (ae *AnalysisEngine) DetectAnomalies() ([]AnomalyEvent, error) {
 	var anomalies []AnomalyEvent
 
-	// 1. 尝试从 Redis 获取预计算的基线 (Baseline)
+	// 1. 尝试从内存缓存获取预计算的基线 (Baseline)
 	baselines := make(map[string]PeerBaseline)
-	if redisEnabled && rdb != nil {
-		cacheKey := "wg:cache:peer_baseline"
-		val, err := rdb.Get(context.Background(), cacheKey).Result()
-		if err == nil && val != "" {
-			_ = json.Unmarshal([]byte(val), &baselines)
-		}
+	if val, ok := globalCache.Get("wg:cache:peer_baseline"); ok && val != "" {
+		_ = json.Unmarshal([]byte(val), &baselines)
 	}
 
 	if len(baselines) == 0 {
@@ -449,15 +445,10 @@ func (ae *AnalysisEngine) AnalyzePeers() ([]PeerStats, error) {
 		totalRx := int64(dimRxRate * WindowSec * 1000000 / 8)
 		totalTx := int64(dimTxRate * WindowSec * 1000000 / 8)
 
-		// 【实时融合】从 Redis 获取该 Peer 的实时 last_seen，取两者最大值：
-		// MySQL MAX(timestamp) 受 WriteInterval(6s)/BufferSize(1000) 影响可能有延迟；
-		// Redis wg:peer:state:{pk} 在每个采集周期（2s）都会更新，更为实时。
-		if redisEnabled && rdb != nil {
-			key := "wg:peer:state:" + pk
-			if val, err := rdb.HGet(context.Background(), key, "last_seen").Result(); err == nil {
-				if redisSeen, err := strconv.ParseInt(val, 10, 64); err == nil && redisSeen > lastSeen {
-					lastSeen = redisSeen
-				}
+		// 【实时融合】从内存缓存获取该 Peer 的实时 last_seen，取两者最大值：
+		if val, found := globalCache.HGet("wg:peer:state:"+pk, "last_seen"); found {
+			if seen, err := strconv.ParseInt(val, 10, 64); err == nil && seen > lastSeen {
+				lastSeen = seen
 			}
 		}
 
@@ -530,19 +521,15 @@ func calculateHealthScore(onlineRecords, totalRecords int, lastSeen int64) float
 }
 
 func (ae *AnalysisEngine) GetAdvancedReport() (AdvancedReport, error) {
-	// 1. 尝试从 Redis 获取缓存
-	if redisEnabled && rdb != nil {
-		cacheKey := "wg:cache:advanced_report"
-		val, err := rdb.Get(context.Background(), cacheKey).Result()
-		if err == nil {
-			var report AdvancedReport
-			if json.Unmarshal([]byte(val), &report) == nil {
-				metrics.IncCacheHits()
-				return report, nil
-			}
+	// 1. 尝试从内存缓存获取预计算报告
+	if val, ok := globalCache.Get("wg:cache:advanced_report"); ok && val != "" {
+		var report AdvancedReport
+		if json.Unmarshal([]byte(val), &report) == nil {
+			metrics.IncCacheHits()
+			return report, nil
 		}
-		metrics.IncCacheMisses()
 	}
+	metrics.IncCacheMisses()
 
 	// 2. 缓存未命中，执行原有查询逻辑
 	anomalies, err := ae.DetectAnomalies()

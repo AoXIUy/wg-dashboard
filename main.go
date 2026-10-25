@@ -22,7 +22,7 @@ func main() {
 
 	// 初始化各组件
 	initGeoIP()
-	initRedis()
+	initMemoryEngine()
 	initComponents()
 
 	if err := initDB(); err != nil {

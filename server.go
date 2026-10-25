@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/go-redis/redis/v8"
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/golang-jwt/jwt/v5"
 	"gopkg.in/natefinch/lumberjack.v2"
@@ -82,27 +81,11 @@ func initGeoIP() {
 	}
 }
 
-// initRedis 连接 Redis，失败时将 redisEnabled 设为 false
-func initRedis() {
-	rdb = redis.NewClient(&redis.Options{
-		Addr:         RedisAddr,
-		DialTimeout:  2 * time.Second,
-		ReadTimeout:  1 * time.Second,
-		WriteTimeout: 1 * time.Second,
-		PoolSize:     10,
-		MinIdleConns: 2,
-	})
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	if err := rdb.Ping(ctx).Err(); err != nil {
-		logger.Printf("Redis 连接失败: %v (将禁用缓存/队列功能)", err)
-		redisEnabled = false
-	} else {
-		logger.Println("Redis 已连接")
-		redisEnabled = true
-	}
+// initMemoryEngine 初始化 Go 原生进程内内存缓存和事件总线
+func initMemoryEngine() {
+	initEventBus()
+	initMemoryCache(100000)
+	logger.Println("Go 原生内存引擎 (EventBus + In-Memory Cache) 初始化完成，已脱离外部 Redis 依赖")
 }
 
 // initComponents 初始化所有内存组件（缓存、SSE Broker 等）
@@ -144,10 +127,9 @@ func startBackgroundServices(ctx context.Context, wg *sync.WaitGroup, rawChan ch
 	wg.Add(1)
 	go func() { defer wg.Done(); startSSEBroker(ctx) }()
 
-	if redisEnabled {
-		wg.Add(1)
-		go func() { defer wg.Done(); startRedisBroadcastListener(ctx) }()
-	}
+	// 启动内存缓存定期淘汰协程
+	wg.Add(1)
+	go func() { defer wg.Done(); globalCache.StartCleaner(ctx, 30*time.Second) }()
 
 	// 定期刷新别名缓存
 	wg.Add(1)
@@ -157,11 +139,9 @@ func startBackgroundServices(ctx context.Context, wg *sync.WaitGroup, rawChan ch
 	wg.Add(1)
 	go func() { defer wg.Done(); startGeoCacheCleaner(ctx) }()
 
-	// 定期预计算分析报告（仅 Redis 启用时）
-	if redisEnabled {
-		wg.Add(1)
-		go func() { defer wg.Done(); startAnalysisPrecompute(ctx) }()
-	}
+	// 定期预计算分析报告（脱离 Redis，使用纯 Go 内存缓存加速）
+	wg.Add(1)
+	go func() { defer wg.Done(); startAnalysisPrecompute(ctx) }()
 }
 
 // startCacheRefresher 定期刷新别名缓存
@@ -397,7 +377,7 @@ func startHTTPServer() *http.Server {
 		logger.Printf("==============================================")
 		logger.Printf("WireGuard Monitor & Manager 启动成功")
 		logger.Printf("接口: %s | 端口: %s", WGInterface, ServerPort)
-		logger.Printf("数据库: MySQL | Redis: %v", redisEnabled)
+		logger.Printf("数据库: MySQL | 缓存引擎: Go 原生内存引擎 (EventBus + In-Memory Cache)")
 		logger.Printf("==============================================")
 
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -469,7 +449,6 @@ func parseFlags() {
 	flag.StringVar(&ServerPort, "port", ":18080", "Web 监听端口")
 	// 安全修复：移除含明文密码的默认 DSN，强制用户显式提供
 	flag.StringVar(&MySQLDSN, "mysql", "", "MySQL 连接字符串 (必填，格式: user:pass@tcp(host:port)/dbname?charset=utf8mb4&parseTime=True&loc=Local)")
-	flag.StringVar(&RedisAddr, "redis", "127.0.0.1:6379", "Redis 地址")
 	flag.IntVar(&Retention, "days", 30, "数据保留天数")
 	flag.StringVar(&AdminPassword, "password", "", "仪表盘访问密码 (必填，或设置 WG_ADMIN_PASSWORD 环境变量)")
 	flag.StringVar(&JWTSecret, "secret", "", "JWT 签名密钥 (必填，或设置 WG_JWT_SECRET 环境变量)")

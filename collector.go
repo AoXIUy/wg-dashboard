@@ -10,7 +10,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-redis/redis/v8"
 	"github.com/shirou/gopsutil/v3/cpu"
 	"github.com/shirou/gopsutil/v3/host"
 	"github.com/shirou/gopsutil/v3/mem"
@@ -61,21 +60,6 @@ func collectPeersData() ([]PeerData, string, int, error) {
 		go aliasCache.Refresh(context.Background())
 	}
 
-	// 批量获取 Redis 状态
-	var redisCmds map[string]*redis.StringStringMapCmd
-	if redisEnabled {
-		pipe := rdb.Pipeline()
-		redisCmds = make(map[string]*redis.StringStringMapCmd)
-		for _, p := range device.Peers {
-			key := fmt.Sprintf("wg:peer:state:%s", p.PublicKey.String())
-			redisCmds[p.PublicKey.String()] = pipe.HGetAll(context.Background(), key)
-		}
-		if _, err := pipe.Exec(context.Background()); err != nil {
-			logger.Printf("Redis Pipeline 执行失败: %v", err)
-			metrics.IncRedisErrors()
-		}
-	}
-
 	var peers []PeerData
 	for _, p := range device.Peers {
 		pk := p.PublicKey.String()
@@ -94,15 +78,13 @@ func collectPeersData() ([]PeerData, string, int, error) {
 		var isOnline bool
 		var lastSeenTime int64
 
-		// 从 Redis 获取实时状态
-		if redisEnabled && redisCmds != nil {
-			if val, err := redisCmds[pk].Result(); err == nil && len(val) > 0 {
-				rxRate, _ = strconv.ParseFloat(val["rx_rate"], 64)
-				txRate, _ = strconv.ParseFloat(val["tx_rate"], 64)
-				onlineInt, _ := strconv.Atoi(val["is_online"])
-				isOnline = onlineInt == 1
-				lastSeenTime, _ = strconv.ParseInt(val["last_seen"], 10, 64)
-			}
+		// 从内存缓存获取实时状态
+		if val, ok := globalCache.HGetAll("wg:peer:state:" + pk); ok && len(val) > 0 {
+			rxRate, _ = strconv.ParseFloat(val["rx_rate"], 64)
+			txRate, _ = strconv.ParseFloat(val["tx_rate"], 64)
+			onlineInt, _ := strconv.Atoi(val["is_online"])
+			isOnline = onlineInt == 1
+			lastSeenTime, _ = strconv.ParseInt(val["last_seen"], 10, 64)
 		}
 
 		// 回退到握手时间判断在线状态
@@ -263,13 +245,8 @@ func startProcessor(ctx context.Context, in <-chan RawSnapshot) {
 	}
 }
 
-// processSnapshot 处理单个快照：计算速率、写入缓冲、更新 Redis
+// processSnapshot 处理单个快照：计算速率、写入缓冲、更新内存状态
 func processSnapshot(ctx context.Context, snap RawSnapshot, stateMap map[string]*PeerState) {
-	var pipe redis.Pipeliner
-	if redisEnabled {
-		pipe = rdb.Pipeline()
-	}
-
 	// 性能优化：同步构建 PeerData，俩面存入全局缓存，防止 broadcastUpdate / pinger 重复向 WG 内核发起查询
 	builtPeers := make([]PeerData, 0, len(snap.Peers))
 
@@ -333,10 +310,18 @@ func processSnapshot(ctx context.Context, snap RawSnapshot, stateMap map[string]
 			}()
 		}
 
-		// 更新 Redis 状态（批量 Pipeline）
-		if redisEnabled && pipe != nil {
-			updateRedisState(pipe, ctx, pk, rxRate, txRate, isOnline, epStr, snap.Timestamp.Unix())
+		// 更新进程内存缓存状态（5 分钟 TTL）
+		onlineVal := 0
+		if isOnline {
+			onlineVal = 1
 		}
+		globalCache.HSet(fmt.Sprintf("wg:peer:state:%s", pk), map[string]interface{}{
+			"rx_rate":   rxRate,
+			"tx_rate":   txRate,
+			"is_online": onlineVal,
+			"endpoint":  epStr,
+			"last_seen": snap.Timestamp.Unix(),
+		}, 5*time.Minute)
 
 		// 构建本循环的 PeerData——利用已有数据，无需再次权豆内核
 		var ips []string
@@ -426,36 +411,11 @@ func processSnapshot(ctx context.Context, snap RawSnapshot, stateMap map[string]
 	cachedPeers = builtPeers
 	cachedPeersMu.Unlock()
 
-	// 执行 Redis Pipeline 并广播更新
-	if redisEnabled && pipe != nil {
-		if _, err := pipe.Exec(ctx); err != nil {
-			logger.Printf("Redis Pipeline 执行失败: %v", err)
-			metrics.IncRedisErrors()
-		} else {
-			broadcastUpdate(ctx)
-		}
-	}
+	// 触发广播更新
+	broadcastUpdate(ctx)
 }
 
-// updateRedisState 将 Peer 实时状态写入 Redis Hash（5 分钟 TTL）
-func updateRedisState(pipe redis.Pipeliner, ctx context.Context, pk string, rxRate, txRate float64, isOnline bool, endpoint string, timestamp int64) {
-	key := fmt.Sprintf("wg:peer:state:%s", pk)
-	onlineVal := 0
-	if isOnline {
-		onlineVal = 1
-	}
-
-	pipe.HSet(ctx, key, map[string]interface{}{
-		"rx_rate":   rxRate,
-		"tx_rate":   txRate,
-		"is_online": onlineVal,
-		"endpoint":  endpoint,
-		"last_seen": timestamp,
-	})
-	pipe.Expire(ctx, key, 5*time.Minute)
-}
-
-// broadcastUpdate 从全局缓存读取最近一次处理结果并推送给所有 SSE 客户端（或 Redis Pub/Sub）
+// broadcastUpdate 从全局缓存读取最近一次处理结果并推送给所有 SSE 客户端及进程内 EventBus
 // 性能优化：不再调用 collectPeersData，消除每个采集周期的第二次 WireGuard 内核查询
 func broadcastUpdate(ctx context.Context) {
 	cachedPeersMu.RLock()
@@ -479,19 +439,14 @@ func broadcastUpdate(ctx context.Context) {
 		return
 	}
 
-	if redisEnabled {
-		if err := rdb.Publish(ctx, "wg:channel:broadcast", string(jsonData)).Err(); err != nil {
-			logger.Printf("Redis 发布失败: %v", err)
-			metrics.IncRedisErrors()
-		}
-	} else {
-		select {
-		case sseBroker.Message <- string(jsonData):
-		default:
-			// BUG-6 修复：记录丢帧警告，便于运维发现"数据卡住"问题；
-			// 原因通常是 SSE 客户端消费慢导致通道（容量100）被打满。
-			logger.Println("警告: SSE Message 通道已满，丢弃本次广播帧")
-		}
+	// 1. 通过进程内 EventBus 广播
+	globalEventBus.Publish("wg:channel:broadcast", string(jsonData))
+
+	// 2. 投递到 SSEBroker
+	select {
+	case sseBroker.Message <- string(jsonData):
+	default:
+		logger.Println("警告: SSE Message 通道已满，丢弃本次广播帧")
 	}
 }
 

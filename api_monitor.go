@@ -611,20 +611,11 @@ func generateAnalysisReport(ctx context.Context, days int) (*AnalysisReport, err
 	return report, nil
 }
 
-// getAnalysisReport 先查 Redis 缓存，未命中时调用 generateAnalysisReport
+// getAnalysisReport 先查内存缓存，未命中时调用 generateAnalysisReport
 func getAnalysisReport(c *gin.Context, days int) (*AnalysisReport, error) {
-	if !redisEnabled {
-		report, err := generateAnalysisReport(c.Request.Context(), days)
-		if err == nil {
-			c.Header("X-Cache", "DISABLED")
-		}
-		return report, err
-	}
-
 	cacheKey := fmt.Sprintf("wg:cache:analysis:%d", days)
 
-	val, err := rdb.Get(c.Request.Context(), cacheKey).Result()
-	if err == nil {
+	if val, ok := globalCache.Get(cacheKey); ok && val != "" {
 		var report AnalysisReport
 		if err := json.Unmarshal([]byte(val), &report); err == nil {
 			c.Header("X-Cache", "HIT")
@@ -637,8 +628,9 @@ func getAnalysisReport(c *gin.Context, days int) (*AnalysisReport, error) {
 
 	report, err := generateAnalysisReport(c.Request.Context(), days)
 	if err == nil {
-		jsonBytes, _ := json.Marshal(report)
-		rdb.Set(c.Request.Context(), cacheKey, jsonBytes, 1*time.Minute)
+		if jsonBytes, err := json.Marshal(report); err == nil {
+			globalCache.Set(cacheKey, string(jsonBytes), 1*time.Minute)
+		}
 		c.Header("X-Cache", "MISS")
 	}
 

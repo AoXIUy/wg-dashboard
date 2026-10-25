@@ -14,8 +14,8 @@ var (
 )
 
 func startAnalysisPrecompute(ctx context.Context) {
-	if !redisEnabled || analysisEngine == nil {
-		logger.Println("分析预计算器已跳过（Redis 未启用或分析引擎未初始化）")
+	if analysisEngine == nil {
+		logger.Println("分析预计算器已跳过（分析引擎未初始化）")
 		return
 	}
 
@@ -113,19 +113,17 @@ func precomputeAnalysisReport(ctx context.Context) {
 		report.Peers = []PeerStats{}
 	}
 
-	// 写入缓存（2 分钟 TTL，比定时任务间隔多 1 分钟，避免空窗期）
+	// 写入内存缓存（2 分钟 TTL，比定时任务间隔多 1 分钟，避免空窗期）
 	if jsonBytes, err := json.Marshal(report); err == nil {
 		cacheKey := "wg:cache:advanced_report"
-		if err := rdb.Set(ctx, cacheKey, jsonBytes, 2*time.Minute).Err(); err != nil {
-			logger.Printf("写入综合分析报告缓存失败: %v", err)
-		} else {
-			logger.Printf("综合分析报告完成并回写缓存（peers=%d, anomalies=%d）",
-				len(report.Peers), len(anomalies))
-			// 通知前端刷新分析数据
-			select {
-			case sseBroker.Message <- `{"type":"analysis_updated"}`:
-			default:
-			}
+		globalCache.Set(cacheKey, string(jsonBytes), 2*time.Minute)
+		logger.Printf("综合分析报告完成并回写内存缓存（peers=%d, anomalies=%d）",
+			len(report.Peers), len(anomalies))
+		// 通知前端刷新分析数据
+		globalEventBus.Publish("wg:channel:broadcast", `{"type":"analysis_updated"}`)
+		select {
+		case sseBroker.Message <- `{"type":"analysis_updated"}`:
+		default:
 		}
 	} else {
 		logger.Printf("序列化分析报告失败: %v", err)
@@ -188,9 +186,6 @@ func precomputePeerBaselines(ctx context.Context) {
 
 	cacheKey := "wg:cache:peer_baseline"
 	// TTL 设为 2 小时，容忍一次 Ticker 丢失
-	if err := rdb.Set(ctx, cacheKey, jsonBytes, 2*time.Hour).Err(); err != nil {
-		logger.Printf("写入 Peer 基线缓存失败: %v", err)
-	} else {
-		logger.Printf("预计算 Peer 流量基线完成，缓存已更新 (更新了 %d 个 Peer)", len(baselines))
-	}
+	globalCache.Set(cacheKey, string(jsonBytes), 2*time.Hour)
+	logger.Printf("预计算 Peer 流量基线完成，内存缓存已更新 (更新了 %d 个 Peer)", len(baselines))
 }

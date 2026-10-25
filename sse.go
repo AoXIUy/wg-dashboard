@@ -66,32 +66,6 @@ func startSSEBroker(ctx context.Context) {
 	}
 }
 
-// startRedisBroadcastListener 订阅 Redis Pub/Sub 频道，将消息转发给本地 SSE Broker
-func startRedisBroadcastListener(ctx context.Context) {
-	logger.Println("Redis Pub/Sub 监听器已启动")
-	defer logger.Println("Redis Pub/Sub 监听器已停止")
-
-	pubsub := rdb.Subscribe(ctx, "wg:channel:broadcast")
-	defer pubsub.Close()
-
-	ch := pubsub.Channel()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case msg, ok := <-ch:
-			if !ok {
-				return
-			}
-			select {
-			case sseBroker.Message <- msg.Payload:
-			default:
-			}
-		}
-	}
-}
-
 // streamHandler 处理 SSE 长连接请求
 func streamHandler(c *gin.Context) {
 	clientChan := make(chan string, 10)

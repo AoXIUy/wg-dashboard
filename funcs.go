@@ -113,38 +113,33 @@ func getMapData(c *gin.Context) {
 				country = entry.Country
 				source = "cache_mem"
 			} else {
-				// 2. 查 Redis 缓存
-				redisHit := false
-				if redisEnabled && rdb != nil {
-					val, err := rdb.Get(context.Background(), "wg:geo:"+ipStr).Result()
-					if err == nil {
-						var redisEntry GeoCacheEntry
-						if json.Unmarshal([]byte(val), &redisEntry) == nil {
-							lat = redisEntry.Lat
-							lon = redisEntry.Lon
-							city = redisEntry.City
-							country = redisEntry.Country
-							source = "cache_redis"
-							redisHit = true
+				// 2. 查全局内存引擎缓存
+				cacheHit := false
+				if val, found := globalCache.Get("wg:geo:" + ipStr); found {
+					var entry GeoCacheEntry
+					if json.Unmarshal([]byte(val), &entry) == nil {
+						lat = entry.Lat
+						lon = entry.Lon
+						city = entry.City
+						country = entry.Country
+						source = "cache_mem"
+						cacheHit = true
 
-							// 同步到内存缓存
-							geoCacheMu.Lock()
-							geoCache[ipStr] = redisEntry
-							geoCacheMu.Unlock()
-						}
+						geoCacheMu.Lock()
+						geoCache[ipStr] = entry
+						geoCacheMu.Unlock()
 					}
 				}
 
 				// 3. 缓存未命中，使用 ipProvider (支持本地数据库 + 外部 API 回退)
-				if !redisHit && ipProvider != nil {
+				if !cacheHit && ipProvider != nil {
 					if info, err := ipProvider.GetInfo(ip); err == nil {
 						lat = info.Latitude
 						lon = info.Longitude
 						country = info.CountryCode
 						city = info.City
-						source = info.Source // provider 返回的 source ("local", "external", "local_fallback")
+						source = info.Source
 
-						// 写入缓存（仅当获取到有效数据时）
 						if lat != 0 || lon != 0 || city != "" {
 							newEntry := GeoCacheEntry{
 								Lat:       lat,
@@ -154,16 +149,12 @@ func getMapData(c *gin.Context) {
 								Timestamp: time.Now(),
 							}
 
-							// 写入内存缓存
 							geoCacheMu.Lock()
 							geoCache[ipStr] = newEntry
 							geoCacheMu.Unlock()
 
-							// 写入 Redis 缓存
-							if redisEnabled && rdb != nil {
-								if jsonBytes, err := json.Marshal(newEntry); err == nil {
-									rdb.Set(context.Background(), "wg:geo:"+ipStr, jsonBytes, 24*time.Hour)
-								}
+							if jsonBytes, err := json.Marshal(newEntry); err == nil {
+								globalCache.Set("wg:geo:"+ipStr, string(jsonBytes), 24*time.Hour)
 							}
 						}
 					}
@@ -202,18 +193,15 @@ var (
 )
 
 func getAdvancedAnalysis(c *gin.Context) {
-	// BUG-3 修复：无 Redis 场景下，原先每次 HTTP 请求都会串行执行 4 个大查询。
-	// 增加进程内存缓存（60 秒 TTL），确保高频请求时不会压垮 MySQL。
-	if !redisEnabled {
-		memAnalysisMu.RLock()
-		if !memAnalysisCacheAt.IsZero() && time.Since(memAnalysisCacheAt) < 60*time.Second {
-			report := memAnalysisCache
-			memAnalysisMu.RUnlock()
-			c.JSON(http.StatusOK, report)
-			return
-		}
+	// 进程内存缓存（60 秒 TTL），确保高频请求时快速响应
+	memAnalysisMu.RLock()
+	if !memAnalysisCacheAt.IsZero() && time.Since(memAnalysisCacheAt) < 60*time.Second {
+		report := memAnalysisCache
 		memAnalysisMu.RUnlock()
+		c.JSON(http.StatusOK, report)
+		return
 	}
+	memAnalysisMu.RUnlock()
 
 	report, err := analysisEngine.GetAdvancedReport()
 	if err != nil {
@@ -221,13 +209,10 @@ func getAdvancedAnalysis(c *gin.Context) {
 		return
 	}
 
-	// 无 Redis 时写入内存缓存
-	if !redisEnabled {
-		memAnalysisMu.Lock()
-		memAnalysisCache = report
-		memAnalysisCacheAt = time.Now()
-		memAnalysisMu.Unlock()
-	}
+	memAnalysisMu.Lock()
+	memAnalysisCache = report
+	memAnalysisCacheAt = time.Now()
+	memAnalysisMu.Unlock()
 
 	c.JSON(http.StatusOK, report)
 }

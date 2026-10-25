@@ -7,7 +7,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-redis/redis/v8"
 	"wg-dashboard/pkg/ipapi"
 )
 
@@ -38,7 +37,6 @@ var (
 	WGInterface   string
 	ServerPort    string
 	MySQLDSN      string
-	RedisAddr     string
 	Retention     int
 	AdminPassword string
 	JWTSecret     string
@@ -51,13 +49,11 @@ var (
 // ================= 全局变量 =================
 var (
 	db             *sql.DB
-	rdb            *redis.Client
 	configMu       sync.Mutex
 	publicKeyRegex = regexp.MustCompile(`^[A-Za-z0-9+/]{43}=$`)
 	logger         *log.Logger
 	ipProvider     ipapi.Provider
 	sseBroker      *SSEBroker
-	redisEnabled   bool
 	aliasCache     *AliasCache
 	trafficBuffer  *TrafficBuffer
 	latencyCache   *LatencyCache
@@ -66,7 +62,7 @@ var (
 	wgExecutor     WireGuardExecutor
 
 	// 性能优化：缓存最近一次采集周期处理后的 PeerData，供 broadcastUpdate 和 startPinger 复用，
-	// 避免各自重复创建 wgctrl.Client 并再次向内核发起查询
+	// 避免各自重复查询内核
 	cachedPeers   []PeerData
 	cachedPeersMu sync.RWMutex
 )
