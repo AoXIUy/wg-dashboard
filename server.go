@@ -186,6 +186,12 @@ func gracefulShutdown(srv *http.Server, cancel context.CancelFunc, wg *sync.Wait
 		logger.Println("后台任务关闭超时")
 	}
 
+	if db != nil {
+		_, _ = db.Exec("PRAGMA wal_checkpoint(TRUNCATE);")
+		_ = db.Close()
+		logger.Println("SQLite 数据库连接已安全关闭")
+	}
+
 	logger.Println("程序已退出")
 }
 

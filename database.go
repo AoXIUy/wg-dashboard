@@ -31,7 +31,7 @@ func initDB() error {
 		return fmt.Errorf("创建数据库存储目录失败: %w", err)
 	}
 
-	dsn := fmt.Sprintf("%s?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)", DBPath)
+	dsn := fmt.Sprintf("%s?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=auto_vacuum(INCREMENTAL)", DBPath)
 	var err error
 	db, err = sql.Open("sqlite", dsn)
 	if err != nil {
@@ -206,8 +206,9 @@ func cleanOldData(ctx context.Context) {
 		}
 	}
 
-	// 4. 定期执行增量整理
+	// 4. 定期执行增量空间回收与查询计划优化
 	_, _ = db.ExecContext(cleanCtx, `PRAGMA incremental_vacuum;`)
+	_, _ = db.ExecContext(cleanCtx, `PRAGMA optimize;`)
 }
 
 // ================= 异步写入 =================
