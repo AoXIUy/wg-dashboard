@@ -475,6 +475,13 @@ func setupAPIRoutes(r *gin.Engine) {
 				manage.GET("/suggest_ip", suggestIPHandler)
 				manage.POST("/peer/toggle", togglePeer)
 			}
+
+			backup := authorized.Group("/backup")
+			{
+				backup.GET("/export", exportBackupHandler)
+				backup.POST("/import", importBackupHandler)
+				backup.GET("/stats", databaseStatsHandler)
+			}
 		}
 	}
 }
