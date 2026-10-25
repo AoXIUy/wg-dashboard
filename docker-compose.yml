@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  wg-dashboard:
+    build: .
+    container_name: wg-dashboard
+    restart: unless-stopped
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+    environment:
+      - WG_ADMIN_PASSWORD=change_this_admin_password
+      - WG_JWT_SECRET=change_this_jwt_secret_at_least_16_chars
+      - WG_IFACE=wg0
+      - WG_DB_PATH=/app/.sandbox_data/wg_dashboard.db
+    volumes:
+      - /etc/wireguard:/etc/wireguard
+      - ./data:/app/.sandbox_data
